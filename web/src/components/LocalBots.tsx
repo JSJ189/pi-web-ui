@@ -71,8 +71,25 @@ export function LocalBots({
 	const [loading, setLoading] = useState(false);
 	const [reload, setReload] = useState(0);
 	const [modelOpen, setModelOpen] = useState(false);
+	const [tab, setTab] = useState<"identity" | "runtime" | "permissions">("identity");
 	const controller = useRef<AbortController | null>(null);
 	const baseCwd = useRef("");
+	const drawer = useRef<HTMLDialogElement>(null);
+	const drawerOpen = draft !== null;
+	useEffect(() => {
+		if (!drawerOpen) return;
+		const panel = drawer.current;
+		const previousFocus = document.activeElement as HTMLElement | null;
+		const previousOverflow = document.body.style.overflow;
+		document.body.style.overflow = "hidden";
+		setTab("identity");
+		panel?.showModal?.();
+		return () => {
+			panel?.close?.();
+			document.body.style.overflow = previousOverflow;
+			previousFocus?.focus();
+		};
+	}, [drawerOpen]);
 	useEffect(() => {
 		const current = new AbortController();
 		void request("local-bots", current.signal)
@@ -172,170 +189,297 @@ export function LocalBots({
 				</button>
 			</div>
 			<p>{t("localBotHint")}</p>
-			{error && <p role="alert">{error}</p>}
+			{error && !draft && <p role="alert">{error}</p>}
 			{notice && <p role="status">{notice}</p>}
-			<div className="dc-bot-list">
-				{bots.map((bot) => (
-					<button
-						className="dc-button"
-						key={bot.id}
-						disabled={busy}
-						onClick={() => {
-							setDraft(structuredClone(bot));
-							setError("");
-							setModelOpen(false);
-						}}
-					>
-						<span>
-							{bot.name} · {bot.enabled ? t("localBotEnabled") : t("localBotDisabled")}
-						</span>
-						<small>
-							{bot.id} · r{bot.revision}
-						</small>
-					</button>
-				))}
-			</div>
-			{draft && (
-				<form
-					className="dc-bot-editor"
-					onSubmit={(event) => {
-						event.preventDefault();
-						void mutate();
-					}}
-				>
-					{draft.id && (
-						<small>
-							{draft.id} · r{draft.revision}
-						</small>
-					)}
-					<fieldset className="dc-bot-section" disabled={busy}>
-						<legend>{t("localBotIdentity")}</legend>
-						<label className="dc-field">
-							{t("localBotName")}
-							<input required value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-						</label>
-						<label className="dc-field">
-							{t("localBotDescription")}
-							<textarea
-								rows={2}
-								value={draft.description}
-								onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-							/>
-						</label>
-						<label className="dc-field">
-							{t("localBotSystemPrompt")}
-							<textarea
-								rows={3}
-								value={draft.systemPrompt}
-								onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
-							/>
-						</label>
-					</fieldset>
-					<fieldset className="dc-bot-section" disabled={busy}>
-						<legend>{t("localBotRuntime")}</legend>
-						<div className="dc-field">
-							<label htmlFor="local-bot-cwd">{t("localBotCwd")}</label>
-							<UniversalPathPicker
-								inputId="local-bot-cwd"
-								localOnly
-								commitOnBlur
-								pathCompletions={pathCompletions}
-								cwd={draft.cwd}
-								baseCwd={baseCwd.current || draft.cwd}
-								projects={options?.projects.map((project) => ({ ...project, lastUsed: 0 })) ?? []}
-								disabled={busy}
-								onSelectCwd={(value) => setDraft({ ...draft, cwd: resolveBotCwd(value, baseCwd.current || draft.cwd) })}
-							/>
-						</div>
-						<div className="dc-field">
-							<span>{t("localBotModel")}</span>
-							<div className="dc-actions">
-								<button className="dc-button" type="button" aria-haspopup="dialog" onClick={() => setModelOpen(true)}>
-									{draft.model
-										? (chosenModel?.name ?? `${draft.model.provider}/${draft.model.modelId}`)
-										: t("localBotInheritModel")}
-								</button>
-								{draft.model && (
-									<button className="dc-button" type="button" onClick={() => setDraft({ ...draft, model: undefined })}>
-										{t("localBotInheritModel")}
-									</button>
-								)}
-							</div>
-							{draft.model && !chosenModel && (
-								<small>{loading ? t("localBotUnverified") : t("localBotUnavailable")}</small>
-							)}
-						</div>
-					</fieldset>
-					<div className="dc-bot-options-status" aria-live="polite">
-						{loading && <span>{t("localBotOptionsLoading")}</span>}
-						{optionsError && <span role="alert">{optionsError}</span>}
+			<div className={`dc-bot-workspace${draft ? " is-editing" : ""}`}>
+				<div className="dc-bot-list" aria-label={t("localBotTitle")}>
+					{bots.map((bot) => (
 						<button
-							className="dc-button"
-							type="button"
-							disabled={loading || busy}
-							onClick={() => setReload((value) => value + 1)}
-						>
-							{optionsError ? t("deviceHubRetry") : t("localBotReload")}
-						</button>
-					</div>
-					<div className="dc-bot-permissions">
-						{(
-							[
-								["tools", t("localBotTools")],
-								["skills", t("localBotSkills")],
-								["mcpServers", t("localBotMcpServers")],
-							] as const
-						).map(([key, title]) => (
-							<LocalBotCatalogPicker
-								key={key}
-								title={title}
-								entries={options?.[key] ?? []}
-								selected={draft[key]}
-								disabled={busy}
-								pending={loading || !!optionsError}
-								onChange={(ids) => setDraft({ ...draft, [key]: ids })}
-							/>
-						))}
-					</div>
-					<label className="dc-bot-enabled">
-						<input
-							type="checkbox"
-							disabled={busy}
-							checked={draft.enabled}
-							onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
-						/>
-						{t("localBotEnable")}
-					</label>
-					<div className="dc-actions">
-						<button className="dc-button" disabled={busy || !draft.cwd || !draft.name.trim()}>
-							{t("localBotSave")}
-						</button>
-						<button
-							className="dc-button"
-							type="button"
+							className={`dc-button dc-bot-item${draft?.id === bot.id ? " is-selected" : ""}`}
+							aria-pressed={draft?.id === bot.id}
+							key={bot.id}
 							disabled={busy}
 							onClick={() => {
-								setDraft(null);
+								setDraft(structuredClone(bot));
+								setError("");
 								setModelOpen(false);
 							}}
 						>
-							{t("localBotCancel")}
+							<span className="dc-bot-avatar" aria-hidden="true">
+								{bot.name.slice(0, 2).toUpperCase()}
+							</span>
+							<span className="dc-bot-item-copy">
+								<strong>{bot.name}</strong>
+								<small className={bot.enabled ? "is-enabled" : ""}>
+									{bot.enabled ? t("localBotEnabled") : t("localBotDisabled")} · r{bot.revision}
+								</small>
+							</span>
 						</button>
-						{draft.id && (
-							<button
-								className="dc-button is-danger"
-								type="button"
-								disabled={busy}
-								onClick={() => {
-									if (window.confirm(t("localBotDeleteConfirm"))) void mutate(true);
-								}}
-							>
-								{t("localBotDelete")}
-							</button>
-						)}
-					</div>
-				</form>
-			)}
+					))}
+				</div>
+				{draft && (
+					<dialog
+						ref={drawer}
+						className="dc-bot-drawer"
+						aria-label={t("localBotTitle")}
+						onCancel={(event) => {
+							event.preventDefault();
+							if (!busy && !modelOpen) setDraft(null);
+						}}
+						onClick={(event) => {
+							if (event.target !== event.currentTarget || busy) return;
+							const bounds = event.currentTarget.getBoundingClientRect();
+							if (
+								event.clientX < bounds.left ||
+								event.clientX > bounds.right ||
+								event.clientY < bounds.top ||
+								event.clientY > bounds.bottom
+							)
+								setDraft(null);
+						}}
+					>
+						<form
+							className="dc-bot-editor"
+							onSubmit={(event) => {
+								event.preventDefault();
+								void mutate();
+							}}
+						>
+							<header className="dc-bot-editor-head">
+								<span className="dc-bot-avatar" aria-hidden="true">
+									{draft.name.slice(0, 2).toUpperCase() || "B"}
+								</span>
+								<div>
+									<h3>{draft.name || t("localBotCreate")}</h3>
+									{draft.id && (
+										<small>
+											{draft.id} · r{draft.revision}
+										</small>
+									)}
+								</div>
+								<label className="dc-bot-enabled">
+									<input
+										type="checkbox"
+										role="switch"
+										disabled={busy}
+										checked={draft.enabled}
+										onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })}
+									/>
+									{t("localBotEnable")}
+								</label>
+								<button
+									className="dc-button dc-bot-drawer-close"
+									type="button"
+									aria-label={t("localBotCancel")}
+									disabled={busy}
+									onClick={() => setDraft(null)}
+								>
+									×
+								</button>
+							</header>
+							<div className="dc-bot-tabs" role="tablist" aria-label={t("localBotTitle")}>
+								{(
+									[
+										["identity", t("localBotIdentity")],
+										["runtime", t("localBotRuntime")],
+										["permissions", t("localBotPermissions")],
+									] as const
+								).map(([key, label], index, tabs) => (
+									<button
+										key={key}
+										type="button"
+										role="tab"
+										id={`bot-tab-${key}`}
+										aria-controls={`bot-panel-${key}`}
+										aria-selected={tab === key}
+										tabIndex={tab === key ? 0 : -1}
+										onClick={() => setTab(key)}
+										onKeyDown={(event) => {
+											let next = index;
+											if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+											else if (event.key === "ArrowLeft") next = (index + tabs.length - 1) % tabs.length;
+											else if (event.key === "Home") next = 0;
+											else if (event.key === "End") next = tabs.length - 1;
+											else return;
+											event.preventDefault();
+											setTab(tabs[next][0]);
+											document.getElementById(`bot-tab-${tabs[next][0]}`)?.focus();
+										}}
+									>
+										{label}
+									</button>
+								))}
+							</div>
+							<div className="dc-bot-editor-body">
+								{error && (
+									<p className="dc-bot-error" role="alert">
+										{error}
+									</p>
+								)}
+								<div
+									role="tabpanel"
+									id="bot-panel-identity"
+									aria-labelledby="bot-tab-identity"
+									hidden={tab !== "identity"}
+								>
+									<p className="dc-bot-section-intro">{t("localBotIdentityHint")}</p>
+									<fieldset className="dc-bot-section" disabled={busy}>
+										<legend>{t("localBotIdentity")}</legend>
+										<label className="dc-field">
+											{t("localBotName")}
+											<input
+												required
+												value={draft.name}
+												onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+											/>
+										</label>
+										<label className="dc-field">
+											{t("localBotDescription")}
+											<textarea
+												rows={2}
+												value={draft.description}
+												onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+											/>
+										</label>
+										<label className="dc-field">
+											{t("localBotSystemPrompt")}
+											<textarea
+												rows={9}
+												className="dc-bot-prompt"
+												spellCheck={false}
+												value={draft.systemPrompt}
+												onChange={(e) => setDraft({ ...draft, systemPrompt: e.target.value })}
+											/>
+										</label>
+									</fieldset>
+									<p className="dc-bot-local-note">{t("localBotPrivatePrompt")}</p>
+								</div>
+								<div
+									role="tabpanel"
+									id="bot-panel-runtime"
+									aria-labelledby="bot-tab-runtime"
+									hidden={tab !== "runtime"}
+								>
+									<p className="dc-bot-section-intro">{t("localBotRuntimeHint")}</p>
+									<fieldset className="dc-bot-section" disabled={busy}>
+										<legend>{t("localBotRuntime")}</legend>
+										<div className="dc-field">
+											<label htmlFor="local-bot-cwd">{t("localBotCwd")}</label>
+											<UniversalPathPicker
+												inputId="local-bot-cwd"
+												localOnly
+												commitOnBlur
+												pathCompletions={pathCompletions}
+												cwd={draft.cwd}
+												baseCwd={baseCwd.current || draft.cwd}
+												projects={options?.projects.map((project) => ({ ...project, lastUsed: 0 })) ?? []}
+												disabled={busy}
+												onSelectCwd={(value) =>
+													setDraft({ ...draft, cwd: resolveBotCwd(value, baseCwd.current || draft.cwd) })
+												}
+											/>
+										</div>
+										<div className="dc-field">
+											<span>{t("localBotModel")}</span>
+											<div className="dc-actions">
+												<button
+													className="dc-button"
+													type="button"
+													aria-haspopup="dialog"
+													onClick={() => setModelOpen(true)}
+												>
+													{draft.model
+														? (chosenModel?.name ?? `${draft.model.provider}/${draft.model.modelId}`)
+														: t("localBotInheritModel")}
+												</button>
+												{draft.model && (
+													<button
+														className="dc-button"
+														type="button"
+														onClick={() => setDraft({ ...draft, model: undefined })}
+													>
+														{t("localBotInheritModel")}
+													</button>
+												)}
+											</div>
+											{draft.model && !chosenModel && (
+												<small>{loading ? t("localBotUnverified") : t("localBotUnavailable")}</small>
+											)}
+										</div>
+									</fieldset>
+								</div>
+								<div
+									role="tabpanel"
+									id="bot-panel-permissions"
+									aria-labelledby="bot-tab-permissions"
+									hidden={tab !== "permissions"}
+								>
+									<p className="dc-bot-section-intro">{t("localBotPermissionsHint")}</p>
+									<div className="dc-bot-options-status" aria-live="polite">
+										{loading && <span>{t("localBotOptionsLoading")}</span>}
+										{optionsError && <span role="alert">{optionsError}</span>}
+										<button
+											className="dc-button"
+											type="button"
+											disabled={loading || busy}
+											onClick={() => setReload((value) => value + 1)}
+										>
+											{optionsError ? t("deviceHubRetry") : t("localBotReload")}
+										</button>
+									</div>
+									<div className="dc-bot-permissions">
+										{(
+											[
+												["tools", t("localBotTools")],
+												["skills", t("localBotSkills")],
+												["mcpServers", t("localBotMcpServers")],
+											] as const
+										).map(([key, title]) => (
+											<LocalBotCatalogPicker
+												key={key}
+												title={title}
+												entries={options?.[key] ?? []}
+												selected={draft[key]}
+												disabled={busy}
+												pending={loading || !!optionsError}
+												onChange={(ids) => setDraft({ ...draft, [key]: ids })}
+											/>
+										))}
+									</div>
+								</div>
+							</div>
+							<footer className="dc-actions dc-bot-editor-footer">
+								<button className="dc-button dc-bot-save" disabled={busy || !draft.cwd || !draft.name.trim()}>
+									{t("localBotSave")}
+								</button>
+								<button
+									className="dc-button"
+									type="button"
+									disabled={busy}
+									onClick={() => {
+										setDraft(null);
+										setModelOpen(false);
+									}}
+								>
+									{t("localBotCancel")}
+								</button>
+								{draft.id && (
+									<button
+										className="dc-button is-danger"
+										type="button"
+										disabled={busy}
+										onClick={() => {
+											if (window.confirm(t("localBotDeleteConfirm"))) void mutate(true);
+										}}
+									>
+										{t("localBotDelete")}
+									</button>
+								)}
+							</footer>
+						</form>
+					</dialog>
+				)}
+			</div>
 			{draft &&
 				modelOpen &&
 				createPortal(
@@ -392,7 +536,7 @@ export function LocalBots({
 							{optionsError && <p role="alert">{optionsError}</p>}
 						</div>
 					</div>,
-					document.body,
+					drawer.current ?? document.body,
 				)}
 		</section>
 	);

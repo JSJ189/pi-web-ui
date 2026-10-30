@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import { retainBuildAssets } from "./build-assets";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
@@ -32,7 +33,7 @@ export default defineConfig({
 	root: __dirname,
 	// Keep chunks and preload dependencies relative when served through a device path.
 	base: "./",
-	plugins: [react(), swBuildIdPlugin(buildId)],
+	plugins: [react(), swBuildIdPlugin(buildId), retainBuildAssets(join(__dirname, "dist"))],
 	define: {
 		// Build id baked into the bundle: the server compares it against the
 		// on-disk build on every WS (re)connect and tells stale pages to
@@ -41,7 +42,8 @@ export default defineConfig({
 	},
 	build: {
 		outDir: join(__dirname, "dist"),
-		emptyOutDir: true,
+		// The retention plugin prunes assets after a successful build.
+		emptyOutDir: false,
 		// 构建目标必须 ≥ es2021（逻辑赋值 ||= 的原生支持）。Vite 默认的
 		// "modules"(=es2020) 会让 esbuild 降级 ||=，而 esbuild 降级 + 压缩写只写
 		// 变量时会丢掉声明：`let r; f(r ||= {})` → `f(void 0 || (r = {}))`，严格模式

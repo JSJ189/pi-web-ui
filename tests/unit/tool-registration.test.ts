@@ -39,6 +39,7 @@ import {
 	SCHEDULE_TOOL_NAME,
 	SKILL_TOOL_NAME,
 	SUBAGENT_TOOL_NAMES,
+	COMMUNICATE_TOOL_NAME,
 	TERMINAL_TOOL_NAMES,
 	TOOL_SEARCH_TOOL_NAME,
 } from "../../server/tool-manager.js";
@@ -73,6 +74,7 @@ const FACTORY_TOOLS: Record<string, string[]> = {
 	makeReadDirTool: ["read"],
 	makeEditSoftTool: [EDIT_SOFT_TOOL_NAME],
 	makeSubagentTools: [...SUBAGENT_TOOL_NAMES],
+	makeCommunicateTool: [COMMUNICATE_TOOL_NAME],
 	makeDelegateTaskTool: [DELEGATE_TASK_TOOL_NAME],
 	makeAskUserQuestionTool: [ASK_USER_QUESTION_TOOL_NAME],
 	makeBrowserPageTool: [BROWSER_PAGE_TOOL_NAME],

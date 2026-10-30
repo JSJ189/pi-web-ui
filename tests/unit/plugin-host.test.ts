@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { resolveNewChatResult } from "../../web/src/new-chat-request";
 import {
 	createPluginHostApi,
 	emitPluginHostModel,
@@ -32,6 +33,13 @@ function harness(overrides: Partial<Parameters<typeof createPluginHostApi>[0]> =
 	const api = createPluginHostApi({
 		send: (msg) => {
 			sent.push(msg);
+			if (msg.type === "new_chat" && msg.requestId && blank)
+				resolveNewChatResult({
+					type: "new_chat_result",
+					requestId: msg.requestId,
+					ok: true,
+					conversationId: conversationId!,
+				});
 			return true;
 		},
 		isReady: () => ready,
@@ -58,6 +66,9 @@ function harness(overrides: Partial<Parameters<typeof createPluginHostApi>[0]> =
 		},
 		setConversationId: (v) => {
 			conversationId = v;
+			const request = sent.findLast((m) => m.type === "new_chat");
+			if (request?.type === "new_chat" && request.requestId && v)
+				resolveNewChatResult({ type: "new_chat_result", requestId: request.requestId, ok: true, conversationId: v });
 		},
 		setBlank: (v) => {
 			blank = v;
@@ -169,7 +180,7 @@ describe("createPluginHostApi", () => {
 		expect(types(h.sent)).toEqual(["new_chat", "prompt"]);
 	});
 
-	it("startChat：newChat=false 直接发 prompt；cwd 切不过去也照发（不静默丢消息）", async () => {
+	it("startChat：newChat=false 绑定当前会话；cwd 超时禁止发送", async () => {
 		const h = harness();
 		h.api.startChat({ prompt: "x", newChat: false });
 		await waitFor(() => types(h.sent).includes("prompt"));
@@ -177,10 +188,22 @@ describe("createPluginHostApi", () => {
 
 		const h2 = harness({ timeoutMs: 30, pollMs: 2 });
 		h2.api.startChat({ prompt: "y", cwd: "/never" });
-		await waitFor(() => types(h2.sent).includes("prompt"), 1500);
-		expect(types(h2.sent)).toEqual(["set_cwd", "new_chat", "prompt"]);
+		await new Promise((resolve) => setTimeout(resolve, 70));
+		expect(types(h2.sent)).toEqual(["set_cwd"]);
+		expect(h.sent.find((m) => m.type === "prompt")).toMatchObject({ targetConversationId: "conv-1" });
+		expect(h.views).toContain("chat");
 	});
 
+	it("new_chat timeout or rejection never delivers a prompt to the original conversation", async () => {
+		const h = harness({ timeoutMs: 20 });
+		h.api.startChat({ prompt: "deploy" });
+		await new Promise((resolve) => setTimeout(resolve, 60));
+		expect(types(h.sent)).toEqual(["new_chat"]);
+		const failed = harness({ send: () => false });
+		failed.api.startChat({ prompt: "deploy" });
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		expect(failed.sent).toEqual([]);
+	});
 	it("setView 透传（空串忽略）", () => {
 		const h = harness();
 		h.api.setView("chat");
@@ -422,7 +445,11 @@ describe("createPluginHostApi.models + startChat/openSession 的 model（issue #
 		const api = createPluginHostApi({
 			send: (msg) => {
 				sent.push(msg);
-				if (msg.type === "new_chat") conversationId = "conv-2";
+				if (msg.type === "new_chat") {
+					conversationId = "conv-2";
+					if (msg.requestId)
+						resolveNewChatResult({ type: "new_chat_result", requestId: msg.requestId, ok: true, conversationId });
+				}
 				if (msg.type === "set_model") modelId = msg.modelId;
 				return true;
 			},

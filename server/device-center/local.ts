@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { getLocalBotOptions, type BotCatalogSources } from "./bot-catalog.js";
 import { isIP } from "node:net";
+import { installHubSetupRoutes } from "./hub-setup.js";
 import { DeviceWorkspaceError } from "./workspaces.js";
 import { createLocalBotRegistry, type LocalBotRegistry, type LocalBotInput } from "./bots.js";
 
@@ -181,6 +182,7 @@ export async function installLocalDeviceCenter(options: Options) {
 		res.redirect("./?view=devices");
 	});
 	options.app.use("/api/device-center", localOnly);
+	const hubSetup = installHubSetupRoutes(options.app, options.dataDir);
 	options.app.get("/api/device-center/status", (_req, res) => {
 		res.json({
 			name: config?.name ?? hostname(),
@@ -468,6 +470,7 @@ export async function installLocalDeviceCenter(options: Options) {
 		},
 		async close() {
 			closed = true;
+			await hubSetup.close();
 			generation++;
 			for (const controller of activeRequests) controller.abort();
 			await serial;

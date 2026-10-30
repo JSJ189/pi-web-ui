@@ -50,6 +50,8 @@ export const PRESET_FIELD_GROUPS = {
 		"toolApprovalEnabled",
 		"toolWatchdogTimeoutMs",
 		"questionnaireEnabled",
+		"questionPresentation",
+		"questionTimeoutSeconds",
 		"editSoftEnabled",
 		"terminalToolsEnabled",
 	],
@@ -284,6 +286,18 @@ export const PRESET_FIELD_META = {
 		labelEn: "Questionnaire Mode",
 		hintZh: "允许 AI 遇到歧义时弹窗向用户多选/单选确认",
 		hintEn: "Allow agent to ask interactive multiple-choice questions",
+	},
+	questionPresentation: {
+		labelZh: "问卷提醒方式",
+		labelEn: "Questionnaire reminders",
+		hintZh: "当前对话弹出、全部弹出或仅队列",
+		hintEn: "Current conversation, all popups, or manual queue",
+	},
+	questionTimeoutSeconds: {
+		labelZh: "子代理问卷等待期限",
+		labelEn: "Subagent question timeout",
+		hintZh: "秒；0 为持续等待，超时不自动选择答案",
+		hintEn: "Seconds; 0 waits indefinitely, timeout never selects an answer",
 	},
 	editSoftEnabled: {
 		labelZh: "宽松缩进编辑 (edit_soft)",

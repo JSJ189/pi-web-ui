@@ -223,6 +223,10 @@ export interface UiState {
 	 */
 	streamingMessage: UiMessage | null;
 	isStreaming: boolean;
+	/** Queued work or an automatic continuation still needs to finish. */
+	completionPending?: boolean;
+	/** Latest user run clock, retained after completion. */
+	turnTiming?: { startedAt: number; finishedAt?: number } | null;
 	model: UiModelInfo | null;
 	thinkingLevel: string;
 	/** DSH 当前会话的 Agent 预设（standard/ptc/minimal/cordis/自建；
@@ -691,6 +695,8 @@ export type ClientMessage =
 	| {
 			type: "prompt";
 			text: string;
+			/** Reject delivery if the active conversation no longer matches this captured target. */
+			targetConversationId?: string;
 			/**
 			 * While the agent is streaming: queue this prompt and deliver it after
 			 * the WHOLE run finishes (followUp) instead of steering (injecting it
@@ -863,7 +869,7 @@ export type ClientMessage =
 	 *  Answered exactly once by an scm_data with kind "commitmsg" — text
 	 *  carries the generated single-line message; ok:false on any failure. */
 	| { type: "scm_commitmsg"; reqId: number }
-	| { type: "new_chat"; preset?: string; ephemeral?: boolean }
+	| { type: "new_chat"; preset?: string; ephemeral?: boolean; requestId?: string }
 	/** Replace a past user question and re-ask in the same session, discarding later turns. */
 	| {
 			type: "edit_message";
@@ -912,6 +918,8 @@ export type ClientMessage =
 	/** 跨页作答预告请求：把另一处的等答复问卷原文取回本页展示（id = 对方 convId）。
 	 *  回答仍经 question_answer（带 owner）回去，不搬迁对话. */
 	| { type: "peek_elsewhere_question"; owner: string; id: string }
+	/** Open the current source of a queued question, taking over its root if needed. */
+	| { type: "navigate_question"; id: string }
 	| { type: "list_projects" }
 	| { type: "list_files"; path?: string }
 	/** 列目录：path 省略 = 工作区根；也接受工作区外绝对路径（Windows "C:/…"、
@@ -1203,6 +1211,8 @@ export type ClientMessage =
 			editSoftEnabled?: boolean;
 			/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
 			questionnaireEnabled?: boolean;
+			questionPresentation?: "queue" | "all" | "manual";
+			questionTimeoutSeconds?: number;
 			/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危
 			 *  检测直接放行、插件 pre guard 的 ask 也按放行处理（纯运行开关，live 生效，无需 reload）。 */
 			toolApprovalEnabled?: boolean;
@@ -1335,6 +1345,10 @@ export type ClientMessage =
 	| { type: "toggle_mcp_server"; name: string; scope: McpScope; enabled: boolean }
 	/** 手动重新加载全部 MCP 服务器。 */
 	| { type: "reload_mcp" }
+	| { type: "mcp_oauth_start"; reqId: string; name: string; scope: McpScope }
+	| { type: "mcp_oauth_finish"; reqId: string; id: string; redirectUrl: string }
+	| { type: "mcp_oauth_status"; reqId: string; id: string }
+	| { type: "mcp_oauth_cancel"; reqId: string }
 	// -- Skill 技能市场安装与卸载 ----------------------------------------------
 	/** 从技能市场安装技能到全局 (~/.pi/agent/skills) 或项目级 (.pi/skills)。 */
 	| {
@@ -1643,6 +1657,7 @@ export type ClientMessage =
 	| { type: "apply_sandbox_to_source"; path?: string; expectedRevision: string }
 	/** Permanently destroy a sandbox project directory and remove it from the registry. */
 	| { type: "destroy_sandbox"; path: string }
+	| { type: "refresh_worktrees" }
 	| { type: "switch_worktree"; path: string }
 	| { type: "remove_worktree"; path: string; force?: boolean }
 	/** Permanently delete a persisted session transcript file (history list). */
@@ -1928,13 +1943,21 @@ export interface UiPendingQuestion {
 	/** 提问 id，question_answer 回传时原样带回。 */
 	id: string;
 	questions: UiQuestion[];
-	/** 服务端超时时间戳（epoch ms）——前端显示倒计时，归零自动取消。
-	 *  缺省 = 不限时（标准 pi 引擎：等人回答不设上限）。 */
+	/** Server deadline (epoch ms). Clients display it; only the server settles expiry.
+	 *  Missing means no deadline. */
 	deadline?: number;
 	/** 所属会话 id（缺省 = 不限会话 / 全局）。用于前端切换会话时自动收起/恢复面板。 */
 	conversationId?: string;
 	/** 所属会话标题/名称（可选），用于在提问弹窗中展示来源对话。 */
 	conversationTitle?: string;
+}
+
+/** Project-scoped questionnaire queue entry. All views answer the same request. */
+export interface UiQueuedQuestion extends UiPendingQuestion {
+	owner: string;
+	rootConversationId?: string;
+	createdAt: number;
+	audience?: "user" | "parent";
 }
 
 /** 期待用户操作的建议按钮选项（由 action/suggest 内联标记产生）。
@@ -3007,6 +3030,8 @@ export interface ConversationSummary {
 	cwd: string;
 	messageCount: number;
 	isStreaming: boolean;
+	/** Queued work or an automatic continuation still needs to finish. */
+	completionPending?: boolean;
 	/** 这是子代理对话（左栏带「子代理」徽标；可点开查看/补充/中止）。 */
 	isSubagent: boolean;
 	/** DSH Agent 预设 id（standard/ptc/minimal/cordis/自建；pi 引擎不填）。 */
@@ -3404,6 +3429,8 @@ export interface UiSettingsState {
 	editSoftEnabled: boolean;
 	/** 问卷提问开关（默认开）。关 → 模型不再弹问卷对话框。 */
 	questionnaireEnabled: boolean;
+	questionPresentation?: "queue" | "all" | "manual";
+	questionTimeoutSeconds?: number;
 	/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危检测
 	 *  直接放行、插件 pre guard 的 ask 也按放行处理（纯运行开关，不进预设、无需 reload）。 */
 	toolApprovalEnabled: boolean;
@@ -3571,6 +3598,7 @@ export interface DshMarketPlugin {
 export type UpdateItemKind = "webui" | "pi-core" | "package" | "git-extension" | "plugin" | "engine";
 
 export type ServerMessage =
+	| { type: "new_chat_result"; requestId: string; conversationId?: string; ok: boolean }
 	| {
 			type: "canvas_list_result";
 			graphs: CanvasGraphSummary[];
@@ -3637,6 +3665,15 @@ export type ServerMessage =
 			servers: UiMcpServer[];
 			globalConfigPath?: string;
 			projectConfigPath?: string;
+	  }
+	| {
+			type: "mcp_oauth_result";
+			reqId: string;
+			status: "pending" | "complete" | "error" | "cancelled";
+			id?: string;
+			authorizationUrl?: string;
+			redirectUrl?: string;
+			error?: string;
 	  }
 	| {
 			type: "mcp_market_result";
@@ -4367,6 +4404,7 @@ export type ServerMessage =
 	 *  手动过户把问卷搬到另一会话时，源页面靠它收起旧对话框（快照为 null 只能收
 	 *  snapshot 来源的面板，即时通道弹出的收不到 —— 见 pending-question.ts）。 */
 	| { type: "question_retracted"; id: string }
+	| { type: "question_queue"; questions: UiQueuedQuestion[] }
 	/** 跨页作答预告（peek_elsewhere_question 的回包）：另一处问卷的原文，
 	 *  本页弹框展示、经 question_answer（带 owner）回去作答。 */
 	| {

@@ -108,10 +108,19 @@ interface QuickProviderPreset {
 	api: string;
 	baseUrl: string;
 	authHeader: boolean;
+	apiKey?: string;
 	tag?: string;
 }
 
 const QUICK_PRESETS: QuickProviderPreset[] = [
+	{
+		id: "magpie",
+		name: "Magpie",
+		api: "openai-completions",
+		baseUrl: "http://127.0.0.1:3425/v1",
+		authHeader: true,
+		apiKey: "magpie",
+	},
 	{
 		id: "deepseek",
 		name: "DeepSeek",
@@ -868,7 +877,7 @@ export function ModelConfigModal({
 				name: prev?.name.trim() || preset.name,
 				api: preset.api,
 				baseUrl: preset.baseUrl,
-				apiKey: prev?.apiKey || "",
+				apiKey: prev?.apiKey || (prev?.hasApiKey ? "" : preset.apiKey) || "",
 				hasApiKey: prev?.hasApiKey ?? false,
 				authHeader: preset.authHeader,
 				models: prev?.models.length ? prev.models : [emptyModel()],

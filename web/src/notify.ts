@@ -65,10 +65,22 @@
  */
 
 import { appUrl } from "./base-url";
+import { loadSoundSettings, type SoundKind, type SoundSettings } from "./sounds";
+
+export const NOTIFY_EVENTS = ["question", "done", "subagentDone", "start", "error", "approval"] as const;
+export type NotifyEventMode = "follow" | "on" | "off";
 
 export interface NotifySettings {
 	/** Master switch — kills every OS notification. */
 	enabled: boolean;
+	/** Missing entries follow the sound event independently of the sound master switch. */
+	events?: Partial<Record<SoundKind, NotifyEventMode>>;
+}
+
+export function isNotifyEventEnabled(kind: SoundKind, settings: NotifySettings, sound: SoundSettings): boolean {
+	if (!settings.enabled) return false;
+	const mode = settings.events?.[kind];
+	return mode === "on" || (mode !== "off" && sound[kind]);
 }
 
 const STORAGE_KEY = "pi-web-notify";
@@ -81,7 +93,12 @@ export function loadNotifySettings(): NotifySettings {
 		const raw = localStorage.getItem(STORAGE_KEY);
 		if (!raw) return { ...DEFAULT_NOTIFY_SETTINGS };
 		const parsed = JSON.parse(raw) as Partial<NotifySettings>;
-		return { enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_NOTIFY_SETTINGS.enabled };
+		const events: NonNullable<NotifySettings["events"]> = {};
+		for (const kind of NOTIFY_EVENTS) {
+			const mode = parsed.events?.[kind];
+			if (mode === "follow" || mode === "on" || mode === "off") events[kind] = mode;
+		}
+		return { enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_NOTIFY_SETTINGS.enabled, events };
 	} catch {
 		return { ...DEFAULT_NOTIFY_SETTINGS };
 	}
@@ -340,11 +357,11 @@ async function showNow(title: string, body?: string, sticky = false): Promise<No
  *  this page. Otherwise it is a safe no-op — including when the browser
  *  withholds the API (insecure context / old browser), where the settings UI
  *  explains the reason instead. Never throws. */
-export async function notify(title: string, body?: string): Promise<void> {
+export async function notify(title: string, body?: string, kind: SoundKind = "done"): Promise<void> {
 	if (!notificationsSupported()) return;
 	// User is watching — don't spam; sound covers it.
 	if (shouldSuppressNotify(currentPresence())) return;
-	if (!loadNotifySettings().enabled) return;
+	if (!isNotifyEventEnabled(kind, loadNotifySettings(), loadSoundSettings())) return;
 	await showNow(title, body);
 }
 

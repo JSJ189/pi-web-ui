@@ -225,6 +225,13 @@ export function evaluateSandboxJail(
 	}
 	if (!sandboxJailPath(".", cwd, sandbox.path))
 		return deny("Sandbox workspace is unavailable or outside its boundary.");
+	// The trusted host must validate both endpoints against the captured sandbox identity.
+	// Tool arguments cannot grant trust or select a different security boundary.
+	if (toolName === "communicate") {
+		return typeof p.action === "string" && ["read", "send", "request", "reply", "escalate"].includes(p.action)
+			? null
+			: deny("Unknown communication action.");
+	}
 	if (isConversationTool(toolName) && policy.inheritedSandboxSubagent) return null;
 	if (toolName === "bash")
 		return deny(

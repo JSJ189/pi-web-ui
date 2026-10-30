@@ -35,6 +35,7 @@ export interface UniversalConversation {
 	driverSessionId?: string;
 	/** 创建时间戳 (ms) */
 	createdAt: number;
+	turnTiming?: { startedAt: number; finishedAt?: number } | null;
 	/** 更新时间戳 (ms) */
 	updatedAt: number;
 	/** 会话历史消息（严格线性追加，无树状分叉） */

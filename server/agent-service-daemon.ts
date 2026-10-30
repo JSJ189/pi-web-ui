@@ -1175,6 +1175,27 @@ export class AgentService {
 		}
 	}
 
+	/** Locate the live request again after takeover; conversation IDs may have changed. */
+	async navigateQuestion(targetId: string, id: string): Promise<void> {
+		const target = this.clients.get(targetId);
+		if (!target) return;
+		for (const [ownerId, source] of this.clients) {
+			if (AgentService.isPseudoClientId(ownerId)) continue;
+			const request = source.getQuestionNavigation(id);
+			if (!request || resolve(request.cwd) !== resolve(target.cwd)) continue;
+			if (source !== target) await this.takeOverConversation(targetId, ownerId, request.rootConversationId);
+			const moved = target.getQuestionNavigation(id);
+			if (moved) await target.switchConversation(moved.conversationId);
+			return;
+		}
+		target.sendNotice({
+			type: "notice",
+			level: "warning",
+			text: "问卷已结束，无法定位来源",
+			textEn: "The question has ended; its source is no longer available.",
+		});
+	}
+
 	/** Get or create the session for a client, racing attach calls safely. */
 	async attach(clientId: string, send: (msg: ServerMessage) => void): Promise<ClientSession> {
 		let cs = this.clients.get(clientId);

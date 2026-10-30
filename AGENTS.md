@@ -53,6 +53,7 @@ pi-web-ui 是 pi 编码智能体（`@earendil-works/pi-coding-agent` SDK）的 W
 | 终端/SCM              | `docs/architecture-terminal.md`    | `terminal(action)` 单工具；`ownerKind` 明确 ClientSession/Conversation 归属；UI 挂载仅 attach，不重跑；后台任务持续持有取消/超时，pending 按 nonce 归属；`terminalBash` 分流（`persist` 控制 ai-bash 复用）；SCM 只读走 execFile，写操作走可见终端 |
 | 工具开关/read 目录    | `docs/architecture-core.md`        | `AGENT_TOOL_CATALOG` 唯一事实源；`read` 覆盖目录走 ls 口径（`readDirEnabled` 是行为开关，不入目录；仅 pi 引擎）；`bash`/`read`/`write`/`edit` 四处覆盖与第三方扩展同名工具的共存（基底 = 扩展实现优先）见 `server/tool-overrides.ts`               |
 | 审批                  | `server/tool-approval.ts`          | 规则库 `<dataDir>/approval-rules.json`（ask/deny/allow）；三档放行：全局关→本对话全部允许→允许同类；记忆只在内存，随过户搬                                                                                                                         |
+| 问卷队列与父代理请示  | `docs/architecture-core.md`        | `question_queue` 按项目同步待答请求；`questionPresentation` 控制弹出/队列；子代理 `consult` 交父代理，`ask_user_question` 只由用户答；服务端截止/取消一次结算，过户保留请求 ID 与期限。                                                            |
 | 问卷/草稿进快照       | `docs/architecture-core.md`        | `UiState.pendingQuestion`（刷新恢复）+ `UiState.draft`（只跟全量快照，`draft_update` 自带 sessionId）                                                                                                                                              |
 | 临时对话              | `server/agent-service.ts`          | `new_chat {ephemeral:true}`→内存不落盘；`UiState.isEphemeral` 恒存在于 light state；`persist_conversation` 一键转正（id 不变）                                                                                                                     |
 | 插件/UI 扩展点        | `docs/architecture-plugins.md`     | `<dataDir>/plugins/<id>/`；manifest `ui` 与 `host.ui.register()` 同一套别名+枚举；合并「宿主<插件<arrange<用户偏好」；插件不碰 DOM；`PLUGIN_API_VERSION=2`                                                                                         |
@@ -67,13 +68,17 @@ pi-web-ui 是 pi 编码智能体（`@earendil-works/pi-coding-agent` SDK）的 W
 | 计划模式              | `server/plan-mode.ts`              | 目标条展开行「只规划」触发；动态剔除写工具并施加硬闸门拦截；禁倾倒大段代码；必须通过计划看板「开始实施」退出；回归 `plan-mode-test`。                                                                                                              |
 | 审查者模式            | `server/delegate-mode.ts`          | 开启后主会话只审不干，Prompt 自动投递常驻执行对话；硬闸门拦截一切写类与派发工具；计划模式优先级高于委派；回归 `delegate-mode-test`。                                                                                                               |
 
+### 对话通信
+
+`communicate` 统一同项目的 send/request/reply/escalate/read，父/root 别名由服务端解析；发送者绑定实际执行会话，跨 await/过户按稳定对象查持有方。通信内容不扩张权限，项目/沙盒/Bot 边界必须在执行前校验。`conversation complete` 登记任务完成，manual 子代理仍有下级/问卷/通信时不得提前通知或结算工作树。旧交接与请示入口复用统一服务。详见 `docs/architecture-core.md`。
+
 ### MCP 项目运行态
 
 `server/mcp-project-runtime.ts` 按项目 cwd 隔离 Bridge 与配置监视器；管理操作捕获项目归属，对话按自身 cwd 获取工具，禁止通过修改共享 Bridge 的 cwd 切换项目。全局配置修改须刷新各项目实例；列表需区分被覆盖配置与旧实例回退。目录 Skill 同步必须携带脚本和资源。详见 `docs/architecture-plugins.md`。
 
 ### 设备中心与跨设备协作
 
-独立 Hub 与本机连接器位于 `server/device-center/`，部署与边界见 `docs/device-center.md`。主界面「设备中心」为原生 `devices` 视图（`DeviceCenter.tsx`），旧 `/devices` 重定向到该视图；配对接口仅允许回环来源与同源写入；群成员统一为 Bot，设备仅负责承载与连接。群任务仅派给显式 @ 的稳定 Bot ID，机器人接力继承父任务预算，禁止无界互派。`bots.ts` 按本机设备身份保存 Bot 的固定项目根、角色、模型及工具/Skill/MCP 白名单；群使用 `botIds`，消息使用 `targetBotIds`，任务与 `device_collab` 文件同步共用 Bot registry lease/revision；执行会话不得冒用其他 Bot。忙碌或停止未确认时禁止换根，旧文件包不得落入新根。文件同步先暂存预览后按 revision 导入，已有差异必须显式覆盖；凭据不得进入工具回执。Hub 默认单端口 `/device/<id>/` 路径访问设备，以 CSP sandbox（禁止 allow-same-origin）与设备专属随机能力路径隔离远程页面；旧独立域/端口保留兼容。跨设备代理只放行账号范围群聊接口，不得暴露本机绑定、目录与设置接口。
+独立 Hub 与本机连接器位于 `server/device-center/`，部署与边界见 `docs/device-center.md`。主界面「设备中心」为原生 `devices` 视图（`DeviceCenter.tsx`），旧 `/devices` 重定向到该视图；未绑定时隐藏侧栏群组并展示连接/创建引导，离线或请求失败不得清空已知群组；本机 Hub 安装走 `hub-setup.ts` 的 loopback 同源接口与独立 Hub CLI，必须验证参数、隔离数据目录、互斥执行并在关闭时取消等待；配对接口仅允许回环来源与同源写入；群成员统一为 Bot，设备仅负责承载与连接。群任务仅派给显式 @ 的稳定 Bot ID，机器人接力继承父任务预算，禁止无界互派。`bots.ts` 按本机设备身份保存 Bot 的固定项目根、角色、模型及工具/Skill/MCP 白名单；群使用 `botIds`，消息使用 `targetBotIds`，任务与 `device_collab` 文件同步共用 Bot registry lease/revision；执行会话不得冒用其他 Bot。忙碌或停止未确认时禁止换根，旧文件包不得落入新根。文件同步先暂存预览后按 revision 导入，已有差异必须显式覆盖；凭据不得进入工具回执。Hub 默认单端口 `/device/<id>/` 路径访问设备，以 CSP sandbox（禁止 allow-same-origin）与设备专属随机能力路径隔离远程页面；旧独立域/端口保留兼容。跨设备代理只放行账号范围群聊接口，不得暴露本机绑定、目录与设置接口。
 
 设备中心远程桌面由 `desktop.ts` 经既有 WebSocket 传输原生 JPEG，`desktop-native.ts` 管 Windows/macOS 助手，`desktop-linux.ts` 管 Linux X11（ffmpeg/xdotool）；不再依赖 VNC/noVNC。只读由服务端按连接强制，浏览器绘制 ACK 限制跨设备待确认帧，断开须释放输入。macOS 14+ 需屏幕录制/辅助功能权限，Wayland 尚不支持；启用状态保存在 `desktop-settings.json`。
 

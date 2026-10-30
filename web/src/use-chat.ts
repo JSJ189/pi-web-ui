@@ -35,6 +35,7 @@ import type {
 	UiModelConfigEntry,
 	UiEnrichResult,
 	UiPendingQuestion,
+	UiQueuedQuestion,
 	UiPluginCatalogEntry,
 	UiPluginInfo,
 	UiPluginUpdateInfo,
@@ -81,6 +82,7 @@ import { receiveCompactedMessages } from "./compacted-history-state";
 import { emitPluginData } from "./plugin-loader";
 import { ingestPluginLogsData } from "./plugin-logs";
 import { resolveCatalogSyncResult } from "./plugin-host";
+import { resolveNewChatResult } from "./new-chat-request";
 import { PROTOCOL_VERSION } from "./protocol-version";
 import { earlierPageNeedsResync, mergeEarlierPage } from "./history-window";
 import { enqueueNotice } from "./notice-policy";
@@ -370,6 +372,8 @@ export interface ChatState {
 	/** 待用户回答的模型提问（ask_user_question）——两个引擎共用。服务端是事实源：
 	 *  即时通道（question_pending）+ 快照（UiState.pendingQuestion，见 syncPendingQuestion）。 */
 	question: UiPendingQuestion | null;
+	/** null until the server supplies an authoritative queue. */
+	questionQueue: UiQueuedQuestion[] | null;
 	/** 跨页作答预告（peek_elsewhere_question 的回包）：别处会话问卷的原文。
 	 *  与本地 question 独立共存（id 各会话作用域，不进 answered 集合）；
 	 *  提交带 owner 由持有方 resolve，本页只负责展示/关闭。 */
@@ -550,6 +554,7 @@ export interface ChatState {
 	 *  before/after an app update; show a persistent refresh banner. */
 	protocolMismatch: boolean;
 	/** 公开远程 MCP 市场查询结果（来自 Smithery/GitHub/自定义源） */
+	mcpOAuthResult: Extract<ServerMessage, { type: "mcp_oauth_result" }> | null;
 	mcpMarketResult: {
 		ok: boolean;
 		servers: RemoteMcpServer[];
@@ -756,6 +761,8 @@ type Action =
 				conversationTitle?: string;
 			} | null;
 	  }
+	| { type: "question_queue"; questions: UiQueuedQuestion[] }
+	| { type: "question_queue_answered"; id: string; owner?: string }
 	| { type: "commands"; commands: CommandDef[]; path: string }
 	| { type: "slash_commands"; commands: SlashCommandInfo[] }
 	| { type: "terminal_add"; meta: TerminalMeta }
@@ -782,6 +789,7 @@ type Action =
 			type: "transition_progress";
 			msg: Extract<ServerMessage, { type: "transition_progress" }>;
 	  }
+	| { type: "mcp_oauth_result"; result: Extract<ServerMessage, { type: "mcp_oauth_result" }> }
 	| { type: "transition_tick" }
 	| { type: "transition_clear" }
 	| { type: "goal_status"; status: GoalStatus }
@@ -1282,7 +1290,15 @@ function reducer(state: ChatState, action: Action): ChatState {
 		case "question":
 			return { ...state, question: action.question };
 		case "remote_question":
-			return { ...state, remoteQuestion: action.question };
+			// Ignore late peek responses after this server has supplied its queue.
+			return { ...state, remoteQuestion: state.questionQueue === null ? action.question : null };
+		case "question_queue":
+			return { ...state, questionQueue: action.questions, remoteQuestion: null };
+		case "question_queue_answered":
+			return {
+				...state,
+				questionQueue: state.questionQueue?.filter((q) => q.id !== action.id || q.owner !== action.owner) ?? null,
+			};
 		case "commands":
 			return {
 				...state,
@@ -1321,6 +1337,14 @@ function reducer(state: ChatState, action: Action): ChatState {
 				},
 			};
 		}
+		case "mcp_oauth_result":
+			return {
+				...state,
+				mcpOAuthResult:
+					state.mcpOAuthResult?.reqId === action.result.reqId
+						? { ...state.mcpOAuthResult, ...action.result, error: action.result.error }
+						: action.result,
+			};
 		case "mcp_market_result":
 			return { ...state, mcpMarketResult: action.result };
 		case "skill_market_result":
@@ -1834,6 +1858,7 @@ export function useChat() {
 		tuiOverlay: null,
 		approval: null,
 		question: null,
+		questionQueue: null,
 		remoteQuestion: null,
 		commands: [],
 		commandsPath: "",
@@ -1877,6 +1902,7 @@ export function useChat() {
 		dsh: null,
 		dshPatches: null,
 		dshMarket: null,
+		mcpOAuthResult: null,
 		mcpMarketResult: null,
 		skillMarketResult: null,
 		skillContentResult: null,
@@ -2098,11 +2124,21 @@ export function useChat() {
 			// 不会发任何回执清除前端面板（否则会出现“回答后不消失、取消无效”）。
 			// 模型再次 ask_user_question 时会重新 question_pending，面板自动回来。
 			if (msg.type === "question_answer") {
+				dispatch({ type: "question_queue_answered", id: msg.id, owner: msg.owner });
 				if (msg.owner) {
+					// Queued pi requests use stable UUIDs, including the local pending mirror.
+					if (
+						chatApi.current.chat.question?.id === msg.id &&
+						chatApi.current.chat.questionQueue?.some((q) => q.id === msg.id && q.owner === msg.owner)
+					) {
+						answeredQuestionsRef.current.add(msg.id);
+						dispatch({ type: "question", question: null });
+					}
 					// 跨页作答：只收跨页对话框。id 是对方会话作用域，绝不进 answered
 					// 集合 —— 否则会误杀本会话未来同号问卷（两边计数器都从 q1 起）。
 					const cur = chatApi.current.chat.remoteQuestion;
-					if (cur && cur.id === msg.id) dispatch({ type: "remote_question", question: null });
+					if (cur && cur.id === msg.id && cur.owner === msg.owner)
+						dispatch({ type: "remote_question", question: null });
 				} else {
 					// 记住这个 id：快照恢复时跳过它（回答消息与快照在途时会交错，服务端
 					// 删除 pending 之前生成的快照仍带着这张问卷）。
@@ -2636,6 +2672,9 @@ export function useChat() {
 					dispatch({ type: "tool_approval", approval: null });
 					break;
 				case "question_retracted": {
+					if (chatApi.current.chat.remoteQuestion?.id === msg.id) {
+						dispatch({ type: "remote_question", question: null });
+					}
 					// 问卷被搬走/取消（手动过户到另一会话）：源页面正在展示该 id 即立即收起。
 					// 快照为 null 收不掉 live 面板（见 pending-question.ts 规则 3），必须显式撤回；
 					// 记入 answered，迟到的旧快照也不会把它复活。
@@ -2651,6 +2690,9 @@ export function useChat() {
 					}
 					break;
 				}
+				case "question_queue":
+					dispatch({ type: "question_queue", questions: msg.questions });
+					break;
 				case "elsewhere_question":
 					// 跨页作答预告（peek 的回包）：别处问卷原文直接弹框，提交带 owner
 					// 由持有方 resolve。与本地问卷独立共存，id 不进 answered 集合。
@@ -2766,6 +2808,9 @@ export function useChat() {
 						projectConfigPath: msg.projectConfigPath,
 					});
 					break;
+				case "mcp_oauth_result":
+					dispatch({ type: "mcp_oauth_result", result: msg });
+					break;
 				case "mcp_market_result":
 					dispatch({ type: "mcp_market_result", result: msg });
 					break;
@@ -2870,6 +2915,9 @@ export function useChat() {
 							...(msg.manifest ? { manifest: msg.manifest } : {}),
 						},
 					});
+					break;
+				case "new_chat_result":
+					resolveNewChatResult(msg);
 					break;
 				case "plugin_catalog_sync_result":
 					// host.reloadCatalog() 的回执（等待中的 Promise 由 plugin-host 管）。

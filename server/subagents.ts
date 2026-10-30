@@ -28,6 +28,7 @@
 
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import type { QuestionAnswer, UiQuestion } from "./protocol.js";
 import { pick, type ServerLang } from "./i18n.js";
 import { type SubagentSpawnExtra, resolveSecurityMode } from "./subagent-security-gate.js";
 import { THINKING_LEVELS } from "./subagent-templates.js";
@@ -58,10 +59,10 @@ export function computeWaitCapMs(watchdogMs?: number): number {
 	return Math.max(Math.floor(watchdog * 0.8), 5_000);
 }
 
-/** 子代理是否已到终态（运行结束、被中止或出错）。wait 工具据此判断
- * 是否可以取结果；streaming=false 即可（error/canceled 都在快照里带标记）。 */
+/** Idle is terminal only when the host has no pending task dependencies.
+ * Idle failures/cancellations remain terminal regardless of pending dependencies. */
 export function isSubagentTerminal(r: SubagentSnapshot | undefined): boolean {
-	return !!r && !r.streaming;
+	return !!r && !r.streaming && (!r.taskPending || !!r.error || !!r.canceled);
 }
 
 /** 单个子代理的运行态快照（供 subagent_list / subagent_get_result 与左栏徽标）。 */
@@ -77,6 +78,8 @@ export interface SubagentSnapshot {
 	state: SubagentState;
 	/** 是否正在流式输出。 */
 	streaming: boolean;
+	/** Host task snapshot: manual idle may still await descendants or questions/communications. */
+	taskPending?: boolean;
 	/** 最近一次运行是否报错（provider 400/超时等）；有则这里带可读错误文本。 */
 	error?: string;
 	/** 是否被用户/AI 中止（最后一条 assistant 消息 stopReason=aborted，或中断后
@@ -116,6 +119,16 @@ export interface SubagentSnapshot {
  * conversation 体系（convs.map 里的 isSubagent 对话）。
  */
 export interface SubagentToolHost {
+	/** Register completion intent; the host settles only when idle and dependencies allow it. */
+	completeSubagent?(selfId: string, summary: string): unknown;
+	/** Host validates ownership and keeps consults separate from user questions. */
+	consultParent?(selfConvId: string, questions: UiQuestion[], signal?: AbortSignal): Promise<unknown>;
+	answerConsult?(selfConvId: string, runId: string, requestId: string, answers: QuestionAnswer[]): unknown;
+	escalateConsult?(selfConvId: string, runId: string, requestId: string): unknown;
+	/** Only unresolved consults awaiting this parent's decision, excluding user escalations. */
+	getPendingConsults?(parentId: string): Array<{ runId: string; requestId: string; questions: UiQuestion[] }>;
+	/** Track active polling by stable conversation identity across ownership transfers. */
+	setConsultWaiting?(parentId: string, waiting: boolean): void;
 	/** 创建子代理 conversation 并触发 prompt。`templateName` 可选：设置面板配置
 	 *  的子代理模板（角色 prompt + 技能/扩展白名单 + 可选模型 + 可选思考强度）；
 	 *  不传 = 按主会话默认配置。`model` 可选："provider/id"，显式指定本次子代理模型
@@ -136,7 +149,7 @@ export interface SubagentToolHost {
 		parentId?: string,
 		persist?: boolean,
 		thinking?: string,
-		notifyOnDone?: boolean,
+		notifyOnDone?: boolean | "manual",
 		isolation?: string,
 		extra?: SubagentSpawnExtra,
 		signal?: AbortSignal,
@@ -228,7 +241,12 @@ export function withSubagentOwner(
 			if (signal !== undefined) args.push(signal);
 			return host.spawnSubagent(...(args as Parameters<SubagentToolHost["spawnSubagent"]>));
 		},
-		handoffSubagent: (fromRunId, toRunId, payload) => host.handoffSubagent(fromRunId || ownerId, toRunId, payload),
+		handoffSubagent: async (fromRunId, toRunId, payload) => {
+			const selfId = resolveOwner();
+			if (!selfId) throw new Error("Handoff requires a verified conversation identity.");
+			if (fromRunId && fromRunId !== selfId) throw new Error("Handoff source must match the calling conversation.");
+			return host.handoffSubagent(selfId, toRunId, payload);
+		},
 		markSubagentsConsumed: (runIds) => host.markSubagentsConsumed?.(runIds),
 		finalizeSubagentWorktree: (convId) => host.finalizeSubagentWorktree?.(convId) ?? Promise.resolve(),
 		getActiveConversationId: () => host.getActiveConversationId?.(),
@@ -239,6 +257,7 @@ export function withSubagentOwner(
 
 export const SUBAGENT_ACTIONS = [
 	"spawn",
+	"complete",
 	"get_result",
 	"steer",
 	"list",
@@ -247,6 +266,9 @@ export const SUBAGENT_ACTIONS = [
 	"templates",
 	"handoff",
 	"dismiss",
+	"consult",
+	"answer",
+	"escalate",
 ] as const;
 
 export type SubagentAction = (typeof SUBAGENT_ACTIONS)[number];
@@ -275,6 +297,11 @@ export function makeSubagentTool(
 		content: [{ type: "text", text: t }],
 		details,
 	});
+
+	// Share delivery memory across the primary tool and legacy alias. Keep only live requests.
+	const deliveredConsults = new Set<string>();
+	const consultKey = (parentId: string, runId: string, requestId: string) =>
+		JSON.stringify([parentId, runId, requestId]);
 
 	const expandDescendants = (roots: Set<string> | string[]): string[] => {
 		if (roots instanceof Set ? roots.size === 0 : (roots as string[]).length === 0) return [];
@@ -340,13 +367,68 @@ export function makeSubagentTool(
 		description:
 			"Create and manage collaborative conversations, including temporary subagents and persistent sessions, for delegation, research, and execution. " +
 			"Each action's arguments are documented on the parameters below.",
-		promptSnippet: "delegate and coordinate conversations (spawn/steer/wait/handoff/dismiss)",
+		promptSnippet: "Delegate tasks, inspect results, or request task completion.",
+		promptGuidelines: [
+			"Prefer communicate for messages and questions; consult/answer/escalate/handoff remain compatible.",
+		],
 		parameters: Type.Object({
 			action: Type.Unsafe<SubagentAction>({
 				type: "string",
 				enum: [...SUBAGENT_ACTIONS],
 				description: "The subagent action to perform.",
 			}),
+			questions: Type.Optional(
+				Type.Array(
+					Type.Object({
+						id: Type.String({ minLength: 1 }),
+						question: Type.String({ minLength: 1 }),
+						detail: Type.Optional(Type.String()),
+						header: Type.Optional(Type.String()),
+						options: Type.Optional(
+							Type.Array(
+								Type.Object({
+									label: Type.String(),
+									description: Type.Optional(Type.String()),
+									preview: Type.Optional(Type.String()),
+									recommended: Type.Optional(Type.Boolean()),
+								}),
+							),
+						),
+						multiSelect: Type.Optional(Type.Boolean()),
+						dependsOn: Type.Optional(
+							Type.Object({
+								questionId: Type.String(),
+								value: Type.Optional(Type.Union([Type.String(), Type.Array(Type.String())])),
+							}),
+						),
+						optionsMap: Type.Optional(
+							Type.Record(
+								Type.String(),
+								Type.Array(
+									Type.Object({
+										label: Type.String(),
+										description: Type.Optional(Type.String()),
+										preview: Type.Optional(Type.String()),
+										recommended: Type.Optional(Type.Boolean()),
+									}),
+								),
+							),
+						),
+					}),
+					{ description: "consult: ask the parent for a decision.", minItems: 1, maxItems: 3 },
+				),
+			),
+			requestId: Type.Optional(Type.String({ description: "answer/escalate: pending consult request ID." })),
+			answers: Type.Optional(
+				Type.Array(
+					Type.Object({
+						id: Type.String(),
+						selected: Type.Array(Type.String()),
+						custom: Type.Optional(Type.String()),
+					}),
+					{ description: "answer: responses to the child's consult.", minItems: 1 },
+				),
+			),
 			prompt: Type.Optional(
 				Type.String({
 					description: "spawn: instructions (goal, constraints, expected output).",
@@ -354,7 +436,7 @@ export function makeSubagentTool(
 			),
 			runId: Type.Optional(
 				Type.String({
-					description: "get_result/steer/stop/dismiss: target conversation ID.",
+					description: "get_result/steer/stop/dismiss/answer/escalate: target conversation ID.",
 				}),
 			),
 			runIds: Type.Optional(
@@ -364,9 +446,10 @@ export function makeSubagentTool(
 			),
 			message: Type.Optional(
 				Type.String({
-					description: "steer: follow-up instruction.",
+					description: "steer: follow-up instruction; complete: completion summary alias.",
 				}),
 			),
+			summary: Type.Optional(Type.String({ description: "complete: final task summary." })),
 			payload: Type.Optional(
 				Type.String({
 					description: "handoff: what to transfer to the peer.",
@@ -379,7 +462,7 @@ export function makeSubagentTool(
 			),
 			fromRunId: Type.Optional(
 				Type.String({
-					description: "handoff: source ID (default = this subagent).",
+					description: "handoff: optional source ID; must match the calling conversation.",
 				}),
 			),
 			type: Type.Optional(
@@ -406,8 +489,9 @@ export function makeSubagentTool(
 				}),
 			),
 			notifyOnDone: Type.Optional(
-				Type.Boolean({
-					description: "spawn: notify and wake parent conversation when finished (default: true).",
+				Type.Union([Type.Boolean(), Type.Literal("manual")], {
+					description:
+						"spawn: true wakes parent per turn, false disables wakes, manual waits for task completion (default: true).",
 				}),
 			),
 			cwd: Type.Optional(
@@ -435,7 +519,7 @@ export function makeSubagentTool(
 			),
 			timeoutSeconds: Type.Optional(
 				Type.Integer({
-					description: `wait_all: max wait in seconds (default: ${capSeconds}s).`,
+					description: `wait_all: max wait in seconds (default: ${capSeconds}s); returns early for new parent consults.`,
 					minimum: 1,
 					maximum: capSeconds,
 				}),
@@ -463,14 +547,87 @@ export function makeSubagentTool(
 				return text(
 					pick(
 						getLang(),
-						"subagent 工具缺少 action 参数（可选：spawn, get_result, steer, list, stop, wait_all, templates, handoff, dismiss）。",
-						"subagent tool requires an action parameter (one of: spawn, get_result, steer, list, stop, wait_all, templates, handoff, dismiss).",
+						`subagent 工具缺少 action 参数（可选：${SUBAGENT_ACTIONS.join(", ")}）。`,
+						`subagent tool requires an action parameter (one of: ${SUBAGENT_ACTIONS.join(", ")}).`,
 						"subagents.action.missing",
 					),
 				);
 			}
 
 			switch (action) {
+				case "complete": {
+					signal?.throwIfAborted();
+					const selfId = selfIdOf();
+					if (!selfId || !host.completeSubagent) throw new Error("Task completion is unavailable.");
+					const summary = (p.summary ?? p.message ?? "").trim();
+					if (!summary) throw new Error("complete requires a nonempty summary or message.");
+					const result = await host.completeSubagent(selfId, summary);
+					if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+						throw new Error(String("error" in result ? result.error : "Completion request rejected."));
+					}
+					return text("Completion intent recorded; settlement waits for idle state and pending dependencies.", {
+						status: "completion_requested",
+						runId: selfId,
+					});
+				}
+				case "consult": {
+					signal?.throwIfAborted();
+					const selfId = selfIdOf();
+					if (!selfId || !host.consultParent) throw new Error("Parent consultation is unavailable.");
+					if (
+						!Array.isArray(p.questions) ||
+						p.questions.length < 1 ||
+						p.questions.length > 3 ||
+						p.questions.some(
+							(q) =>
+								!q || typeof q.id !== "string" || !q.id.trim() || typeof q.question !== "string" || !q.question.trim(),
+						) ||
+						new Set(p.questions.map((q) => q.id)).size !== p.questions.length
+					) {
+						throw new Error("consult requires 1-3 questions with unique IDs and nonempty text.");
+					}
+					const result = await host.consultParent(selfId, p.questions, signal);
+					signal?.throwIfAborted();
+					return text(
+						`${JSON.stringify(result) ?? "Consult resolved."}\nIf timed_out, do not choose on the parent's behalf. Ask again with only the context needed for the decision.`,
+						result,
+					);
+				}
+				case "answer":
+				case "escalate": {
+					signal?.throwIfAborted();
+					const selfId = selfIdOf();
+					if (!selfId || !p.runId?.trim() || !p.requestId?.trim()) {
+						throw new Error(`${action} requires caller identity, runId and requestId.`);
+					}
+					let result: unknown;
+					if (action === "answer") {
+						if (!host.answerConsult) throw new Error("Consult answers are unavailable.");
+						if (
+							!Array.isArray(p.answers) ||
+							p.answers.length === 0 ||
+							p.answers.some(
+								(a) =>
+									!a ||
+									typeof a.id !== "string" ||
+									!a.id.trim() ||
+									!Array.isArray(a.selected) ||
+									a.selected.some((s) => typeof s !== "string") ||
+									(a.custom !== undefined && typeof a.custom !== "string"),
+							)
+						) {
+							throw new Error("answer requires structured answers.");
+						}
+						result = await host.answerConsult(selfId, p.runId, p.requestId, p.answers);
+					} else {
+						if (!host.escalateConsult) throw new Error("Consult escalation is unavailable.");
+						result = await host.escalateConsult(selfId, p.runId, p.requestId);
+					}
+					if (result && typeof result === "object" && "ok" in result && result.ok === false) {
+						throw new Error("error" in result ? String(result.error) : `Consult ${action} rejected.`);
+					}
+					return text(JSON.stringify(result) ?? `Consult ${action} submitted.`, result);
+				}
 				case "spawn": {
 					if (!p.prompt || typeof p.prompt !== "string" || !p.prompt.trim()) {
 						return text(
@@ -538,7 +695,7 @@ export function makeSubagentTool(
 							string?,
 							boolean?,
 							string?,
-							boolean?,
+							(boolean | "manual")?,
 							string?,
 							SubagentSpawnExtra?,
 							AbortSignal?,
@@ -620,7 +777,7 @@ export function makeSubagentTool(
 							model: p.model,
 							thinking: p.thinking,
 							persisted: !!p.persist,
-							notifyOnDone: p.notifyOnDone !== false,
+							notifyOnDone: p.notifyOnDone ?? true,
 							isolation: isolationMode === "worktree" ? "worktree" : undefined,
 						},
 					);
@@ -655,7 +812,7 @@ export function makeSubagentTool(
 					const doneDetail = verdictText(r, getLang());
 					const doneOutput = r.output || (getLang() === "zh" ? "（无结果）" : "(no result)");
 					const modelTag = r.model ? ` · ${r.model}${r.thinkingLevel ? `:${r.thinkingLevel}` : ""}` : "";
-					if (r.streaming || r.state === "running") {
+					if (!isSubagentTerminal(r)) {
 						const runningId = shortId(r.convId);
 						const runningOutput = r.output || (getLang() === "zh" ? "（暂无输出）" : "(no output yet)");
 						return text(
@@ -863,7 +1020,28 @@ export function makeSubagentTool(
 					if (selfId) wanted.delete(selfId);
 					for (const ancId of selfAncestorIds) wanted.delete(ancId);
 
+					const collectConsults = () => {
+						const parentId = selfIdOf();
+						if (!parentId || !host.getPendingConsults || signal?.aborted) return;
+						// The host authorizes direct-child requests for this parent, independent of runIds.
+						const pending = host.getPendingConsults(parentId);
+						const liveKeys = new Set(pending.map((r) => consultKey(parentId, r.runId, r.requestId)));
+						for (const key of deliveredConsults) {
+							if (!liveKeys.has(key)) deliveredConsults.delete(key);
+						}
+						const requests = pending.filter((r) => !deliveredConsults.has(consultKey(parentId, r.runId, r.requestId)));
+						if (requests.length === 0) return;
+						for (const r of requests) deliveredConsults.add(consultKey(parentId, r.runId, r.requestId));
+						const result = { status: "needs_input", requests };
+						return text(
+							`Child consults need your decision. Use answer or escalate before waiting again.\n${JSON.stringify(result)}`,
+							result,
+						);
+					};
+
 					if (wanted.size === 0) {
+						const consults = collectConsults();
+						if (consults) return consults;
 						return text(
 							pick(
 								getLang(),
@@ -883,21 +1061,30 @@ export function makeSubagentTool(
 					const startedAt = Date.now();
 					const POLL_INTERVAL_MS = 250;
 
-					while (!signal?.aborted && Date.now() - startedAt < timeoutMs) {
-						for (const descId of expandDescendants(wanted)) {
-							if (selfId && descId === selfId) continue;
-							if (selfAncestorIds.has(descId)) continue;
-							wanted.add(descId);
+					try {
+						const waitingParentId = selfIdOf();
+						if (waitingParentId) host.setConsultWaiting?.(waitingParentId, true);
+						while (!signal?.aborted && Date.now() - startedAt < timeoutMs) {
+							for (const descId of expandDescendants(wanted)) {
+								if (selfId && descId === selfId) continue;
+								if (selfAncestorIds.has(descId)) continue;
+								wanted.add(descId);
+							}
+							const consults = collectConsults();
+							if (consults) return consults;
+							const allDone = Array.from(wanted).every((id) => {
+								const r = host.getSubagent(id);
+								// #488：getSubagent 返回 undefined = 已被移出（强行关闭/收尾清理）
+								// ——视为终态，与下方报告段「已移出或不存在」口径一致；否则等待
+								// 集合含被移出子代理时 allDone 恒 false，必然白等满 timeoutMs。
+								return r === undefined || isSubagentTerminal(r);
+							});
+							if (allDone) break;
+							await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
 						}
-						const allDone = Array.from(wanted).every((id) => {
-							const r = host.getSubagent(id);
-							// #488：getSubagent 返回 undefined = 已被移出（强行关闭/收尾清理）
-							// ——视为终态，与下方报告段「已移出或不存在」口径一致；否则等待
-							// 集合含被移出子代理时 allDone 恒 false，必然白等满 timeoutMs。
-							return r === undefined || isSubagentTerminal(r);
-						});
-						if (allDone) break;
-						await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+					} finally {
+						const waitingParentId = selfIdOf();
+						if (waitingParentId) host.setConsultWaiting?.(waitingParentId, false);
 					}
 
 					const tLang = getLang();
@@ -1032,7 +1219,12 @@ export function makeSubagentTool(
 				}
 
 				case "handoff": {
-					const fromId = p.fromRunId || selfIdOf() || "unknown";
+					signal?.throwIfAborted();
+					const fromId = selfIdOf();
+					if (!fromId) throw new Error("Handoff requires a verified conversation identity.");
+					if (p.fromRunId && p.fromRunId !== fromId) {
+						throw new Error("Handoff source must match the calling conversation.");
+					}
 					if (!p.toRunId || typeof p.toRunId !== "string" || !p.toRunId.trim()) {
 						return text(
 							pick(
@@ -1397,8 +1589,8 @@ export function makeSubagentTool(
 					return text(
 						pick(
 							getLang(),
-							`未知 action：${action}。支持的 action：spawn, get_result, steer, list, stop, wait_all, templates, handoff, dismiss。`,
-							`Unknown action: ${action}. Supported actions: spawn, get_result, steer, list, stop, wait_all, templates, handoff, dismiss.`,
+							`未知 action：${action}。支持的 action：${SUBAGENT_ACTIONS.join(", ")}。`,
+							`Unknown action: ${action}. Supported actions: ${SUBAGENT_ACTIONS.join(", ")}.`,
 							"subagents.action.unknown",
 							{ action },
 						),
@@ -1486,7 +1678,7 @@ export function collectSubagentDescendantIds(
 function subagentVerdict(r: SubagentSnapshot, lang: ServerLang = "en"): string {
 	if (r.error) return pick(lang, "error（报错）", "error", "subagents.verdict.error");
 	if (r.canceled) return pick(lang, "canceled（已中止）", "canceled", "subagents.verdict.canceled");
-	return r.state;
+	return r.taskPending ? "pending" : r.state;
 }
 
 /** 终态的可读说明（错误文本 / 中止说明 / 空）。运行中返回空。 */

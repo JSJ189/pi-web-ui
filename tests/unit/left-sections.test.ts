@@ -15,10 +15,46 @@ import {
 	parseLpWeights,
 	planLeftSections,
 	sashPairs,
+	withDeviceGroupSection,
 	type LpSectionKey,
 } from "../../web/src/left-sections.js";
 
 const entry = (id: string, hidden = false) => ({ id, hidden });
+
+describe("群组分区的拖动布局", () => {
+	it("群组位于项目之后，并与上下展开分区形成分隔条", () => {
+		const plan = withDeviceGroupSection(planLeftSections(undefined));
+		expect(plan.map((item) => item.key)).toEqual(["projects", "groups", "convs", "sessions"]);
+		expect(
+			sashPairs(
+				flexSectionKeys(plan, () => true),
+				() => false,
+			),
+		).toEqual([
+			["projects", "groups"],
+			["groups", "convs"],
+			["convs", "sessions"],
+		]);
+	});
+
+	it("项目隐藏时群组置顶，折叠群组不生成其边界分隔条", () => {
+		const plan = withDeviceGroupSection(planLeftSections([entry("host:lp-projects", true)]));
+		const flex = flexSectionKeys(plan, () => true);
+		expect(flex).toEqual(["groups", "convs", "sessions"]);
+		expect(sashPairs(flex, (key) => key === "groups")).toEqual([["convs", "sessions"]]);
+	});
+
+	it("项目没有内容时群组仍与运行区配对，保存的群组权重可恢复", () => {
+		const plan = withDeviceGroupSection(planLeftSections(undefined));
+		expect(
+			sashPairs(
+				flexSectionKeys(plan, (key) => key !== "projects"),
+				() => false,
+			)[0],
+		).toEqual(["groups", "convs"]);
+		expect(parseLpWeights('{"groups":0.4}', { projects: 1, groups: 1, convs: 1, sessions: 1 }).groups).toBe(0.4);
+	});
+});
 
 describe("planLeftSections（顺序 + 显隐）", () => {
 	it("没有条目信息时回落缺省顺序（与改造前的 JSX 先后一致）、全部显示", () => {

@@ -2,6 +2,18 @@
 
 > 改代码前必读。本文档覆盖快照驱动、协议单源、安全边界、主题切换、多对话并发等全局架构决策。
 
+## 本轮对话计时
+
+底部 `host:working` 使用 `UiState.turnTiming` 的服务端时间戳：消息开始投递时启动，工具调用、插队和自动重试沿用同一时钟；本轮结束或停止时记录 `finishedAt`，保留最终用时，下一轮重新开始。快照显式下发 `null` 清空无计时的会话，避免切换对话残留。前端每秒刷新显示，完成后停止定时器；计时文本独立于可隐藏的状态标签，以兼容窄屏布局。
+
+## 协作完成通知
+
+完成提示音、桌面通知和结束播报使用独立的工作状态边沿：`isStreaming || completionPending`。`completionPending` 在活动快照和运行会话摘要中发布，包含排队 steering/follow-up、提示投递窗口，以及子代理通知的聚合等待和异步投递；不会改变 `isStreaming` 的输出语义。子代理通知在异步结算工作树和投递期间持续占用待办计数，投递完成或失败后通过父对话当前持有方刷新状态。连续续跑直到队列排空才触发一次完成通知，前台、后台均适用。
+
+## 工作树提醒
+
+工作树横幅通过 `refresh_worktrees` 请求重新检测服务端事实：页面可见时每 30 秒一次，窗口重新聚焦或页面恢复可见时立即刷新；隐藏页面暂停检测。响应绑定发起时的项目 cwd，切项目后不得发布旧项目结果。主仓库里的关联工作树提醒可关闭，选择按主仓库路径存入 localStorage，只有关联工作树路径集合变化才重新提醒，分支或文件脏状态变化不重弹。当前处于子工作树时仍保留返回主仓库的提示。
+
 ## 对话协作工具兼容
 
 对话协作主工具名为 `conversation`，支持子代理及持久对话；转录、文件与状态按需读取统一使用 `conversation(action="read"/"files"/"status")`，原 `conversation_read` 不再独立注册。旧名 `subagent` 保持兼容。设置页只展示一个 `conversation` 开关，禁用状态统一包含新旧两个名字，启用时同时移除；历史工具调用的新旧名称均使用协作图标展示。模板等子代理专属概念保留原有术语。
@@ -70,6 +82,24 @@
 `server/protocol.ts` 是唯一事实源；`web/src/types.ts` 用 `export type * from "../../server/protocol"` 全量再导出（纯类型，构建时擦除），前端本地类型（FileContent/FileListing/ToolStatus）附在 shim 下方。
 
 新增/修改任何消息：只改 `protocol.ts`，然后在 `server/index.ts` 的 `dispatch` switch 和 `web/src/use-chat.ts` 的 `onmessage` switch 各加一个分支。注意 protocol.ts 必须保持**纯类型导出**（不能加 const/function 等运行时代码，否则破坏 type-only 前提）；`npm run check:protocol` 守护这两个不变量。
+
+## 对话通信与任务完成
+
+`communicate` 统一同项目执行对话的 `send/request/reply/escalate/read`；目标支持 `parent`、`root` 和稳定对话 ID。独立 coordinator 以 Conversation 对象身份保存收件箱与问答关系，过户不重建身份。`read` 同时返回可达对话目录与稳定通信地址，跨页面同名对话优先使用该地址；来源 endpoint 必须贯穿投递，不得按接收方局部 ID 重新推断发送者。消息是带来源的协作数据，不授予执行权限；宿主校验实际项目、沙盒和 Bot 边界。只读子代理可通信，计划/委派审查/目标审查模式拒绝通过此工具派发工作。
+
+`send` 返回投递或排队状态，不等待接收方处理任务；`read` 分页读取并消费自己的收件箱，熔断期间消息仍保留。`request` 等待结构化回答，服务端限制消息字节、队列与请求数量并拒绝请求循环；`reply` 仅允许原接收对话，`escalate` 将同一 PendingQuestion 交给用户，沿用原始截止时间。`wait_all` 为待当前对话处理的请求提前返回。旧 `handoff/consult/answer/escalate` 作为兼容入口转接通信服务；历史挂起问卷保持可结算。
+
+任务完成通过 `conversation(action="complete", summary)` 登记，与发送消息分开。`spawn.notifyOnDone` 保留布尔兼容并支持 `"manual"`。manual 本轮退出但还有运行中下级、问卷、通信或待投递子结果时保持 taskPending，禁止提前通知、消费结果或结算工作树；完成登记不能绕过这些条件。所有依赖收口后使用显式 summary，未登记则以最终正文兜底。错误与取消继续通知，自动唤醒不清除手动完成意图。当前 manual 和通信宿主为 pi 引擎，Universal 明确拒绝不支持的 manual 模式。
+
+## 问卷队列与父代理请示
+
+标准 pi 引擎通过 `question_queue` 推送当前项目完整待答队列；每个请求保持稳定 ID、来源对话、顶层对话、持有方、创建时间及可选截止时间。顶层入口、来源对话与跨页面回答引用同一请求，回答按当前持有方结算，过户保留请求身份与期限。快照的 `pendingQuestion` 和即时 `question_pending` 保留其他引擎兼容；前端队列入口合并后只展示一个问卷。
+
+`questionPresentation` 控制当前对话弹出并排队其他问卷（默认 `queue`）、全部自动弹出（`all`）或仅手动队列（`manual`）。稍后回答保留问卷与草稿，取消为显式操作；来源跳转打开对应对话。当前项目以外的问卷不得进入队列。
+
+子代理用 `conversation(action="consult")` 请示直接父对话；父对话通过 `answer` 作答或 `escalate` 交给用户。`ask_user_question` 始终等待用户，父代理不得代答。`wait_all` 遇到尚未交付给当前父对话的请示提前返回 `needs_input`，同一请求不反复唤醒。父代理不可处理时升级用户，已有自动唤醒预算继续生效。
+
+`questionTimeoutSeconds` 对新建子代理问卷及请示默认 240 秒，0 为不限时；主对话保持原等待策略。服务端负责期限和取消，超时返回明确结果，不自动采用推荐选项。升级不重置期限，浏览器倒计时不触发取消。问卷结束不等于执行会话结束，也不会提前释放并发名额。
 
 ## 全局运行态（app-globals.ts：不逐层传 props）
 
@@ -386,3 +416,9 @@ Pi Durable（`@earendil-works/pi-durable`）把同一件事分成两份投影，
 投影事件流：按 `contentIndex` 记账已下发的正文/思考长度（流式增量与最终整段落盘不重复不丢字），
 工具回执「成功只带 `output`、失败只带 `error`」向下游对齐；嵌套调用（`parentToolCallId`）不单独出卡片，
 保住「一个父调用一张卡」的展示口径。回归：`tests/unit/durable-event-projector.test.ts`（含驱动不得再读 `slot.input/slot.output` 的守卫）。
+
+### Correlated host conversation creation
+
+Host startChat/openSession sends new_chat with an optional requestId and waits for new_chat_result carrying the same requestId and the exact conversationId captured by the engine on creation/reuse. Rejection, missing ACK or timeout cancels prompt delivery; observing an unrelated conversation switch is never sufficient. Older clients may omit requestId. Prompts may include targetConversationId (the UI conversationId, not the SDK sessionId); dispatch rejects a mismatch against activeConversationId before synchronously entering prompt. Engines capture the conversation before awaits and reject stale targets before entering streaming state.
+
+Device center setup keeps remote read-only guidance available when local pairing APIs are forbidden. Setup metadata restores installed URLs; unsuccessful status queries do not imply absence. Installed but unhealthy or unowned centers show CLI diagnostics rather than reinstalling. Installation continues on the server when the page is left; reopening and reloading metadata restores progress and pairing actions.

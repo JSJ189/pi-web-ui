@@ -12,6 +12,9 @@ import { setupDesktopWindowDecorations } from "./desktop";
 import { initAuthToken } from "./auth-token";
 import { installScrollbarGutterVar } from "./scrollbar-gutter";
 import { appBase } from "./base-url";
+import { installChunkRecovery } from "./chunk-recovery";
+
+const recoverChunk = installChunkRecovery(__BUILD_ID__);
 
 /** 根级错误边界：防止渲染期 JS 异常导致整棵 React 树卸载为纯黑屏。 */
 class RootErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
@@ -22,6 +25,7 @@ class RootErrorBoundary extends Component<{ children: ReactNode }, { error: Erro
 	}
 
 	override componentDidCatch(error: Error, info: unknown) {
+		if (recoverChunk(error)) return;
 		console.error("RootErrorBoundary caught error:", error, info);
 	}
 

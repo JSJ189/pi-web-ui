@@ -284,10 +284,23 @@ export function subagentSecurityDenial(
 			reasonEn: `Restricted subagent (${mode}): dispatch tool "${name}" is blocked. Complete inspection and return findings within this session.`,
 		};
 	}
+	if (name === "communicate") {
+		const action = params && typeof params === "object" ? (params as Record<string, unknown>).action : undefined;
+		if (typeof action !== "string" || !["read", "send", "request", "reply", "escalate"].includes(action)) {
+			return {
+				kind: "dispatch-tool",
+				reason: "受限子代理：未知通信操作。",
+				reasonEn: "Restricted subagent: unknown communication action.",
+			};
+		}
+		return undefined;
+	}
 	if (isConversationTool(name)) {
 		const action =
 			typeof params === "object" && params !== null ? (params as Record<string, unknown>).action : undefined;
 		const act = typeof action === "string" ? action.trim().toLowerCase() : "";
+		// Completion reports this execution result; it does not dispatch or mutate another task.
+		if (act === "complete") return undefined;
 		// Allow transcript inspection and collaboration queries; block dispatch and mutations.
 		if (!isReadOnlyConversationAction(act)) {
 			return {

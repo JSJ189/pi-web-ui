@@ -66,6 +66,7 @@ describe("upload settings exposed to clients", () => {
 			const svc = new SettingsService(
 				{
 					clientId: "client",
+					isDisposed: () => false,
 					stateStore: store,
 					emit: (m: ServerMessage) => {
 						seen.push(m);

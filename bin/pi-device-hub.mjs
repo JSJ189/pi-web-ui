@@ -1,22 +1,8 @@
 #!/usr/bin/env node
-/** Standalone account, device relay and collaboration hub. No agent SDK needed. */
+/** Standalone Hub CLI; no main CLI or agent SDK dependencies. */
+import { runHubCliEntry } from "./device-hub-cli.mjs";
 try {
-	const { startDeviceHub } = await import("../dist/server/device-center/main.js");
-	const hub = await startDeviceHub();
-	let closing = false;
-	for (const signal of ["SIGINT", "SIGTERM"]) {
-		process.on(signal, () => {
-			if (closing) return;
-			closing = true;
-			void hub.close().then(
-				() => process.exit(0),
-				(error) => {
-					console.error(error.message);
-					process.exit(1);
-				},
-			);
-		});
-	}
+	await runHubCliEntry();
 } catch (error) {
 	console.error(`[device-hub] ${error.message}`);
 	process.exitCode = 1;

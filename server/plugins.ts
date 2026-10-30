@@ -76,6 +76,7 @@ import { getAppVersion } from "./pkg-info.js";
 import { readCatalog, addCustomEntry, removeCustomEntry, type CatalogAddInput } from "./plugin-catalog.js";
 import { PluginGrantsStore, normalizeGrantPath } from "./plugin-grants.js";
 import { normalizeIconSvg } from "./icon-svg.js";
+import { cleanupRemovedPlugins } from "./plugin-removal.js";
 import { PluginDomConsent, declarationWantsDom } from "./plugin-dom.js";
 import { validatePluginManifest, formatManifestIssue, isKnownPermission } from "./plugin-manifest-validate.js";
 import { buildPluginApiCatalog } from "./plugin-api-catalog.js";
@@ -1894,6 +1895,7 @@ export class PluginManager {
 		/** 随包发布的默认插件列表（<pkgRoot>/plugins/catalog.json）。缺省 = 无内置列表。 */
 		private readonly builtinCatalogPath?: string,
 	) {
+		cleanupRemovedPlugins(dataDir);
 		this.cwdValue = resolve(cwd);
 		this.grants = new PluginGrantsStore(dataDir);
 		this.permGrants = new PluginPermissionStore(dataDir);

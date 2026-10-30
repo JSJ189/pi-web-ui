@@ -12,6 +12,8 @@ it("tracks the selected group from navigation and clears its highlight for ordin
 		vi.fn(async () => ({
 			ok: true,
 			json: async () => ({
+				hubUrl: "https://hub.example.com",
+				deviceId: "local",
 				rooms: [
 					{ id: "one", name: "家", botIds: [] },
 					{ id: "two", name: "工作", botIds: [] },

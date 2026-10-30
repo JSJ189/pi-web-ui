@@ -51,10 +51,11 @@ describe("subagents tools", () => {
 		}
 	});
 
-	it("SUBAGENT_TOOL_NAMES 包含 conversation 与兼容别名，SUBAGENT_ACTIONS 包含 9 种 action", () => {
+	it("SUBAGENT_TOOL_NAMES 包含 conversation 与兼容别名，SUBAGENT_ACTIONS 包含 13 种 action", () => {
 		expect(SUBAGENT_TOOL_NAMES).toEqual(["conversation", "subagent"]);
 		expect(SUBAGENT_ACTIONS).toEqual([
 			"spawn",
+			"complete",
 			"get_result",
 			"steer",
 			"list",
@@ -63,6 +64,9 @@ describe("subagents tools", () => {
 			"templates",
 			"handoff",
 			"dismiss",
+			"consult",
+			"answer",
+			"escalate",
 		]);
 		const host = makeHostSpies();
 		const tools = makeSubagentTools(host);

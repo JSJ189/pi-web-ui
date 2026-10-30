@@ -242,6 +242,7 @@ interface SettingsModalProps {
 		/** 内置定时任务（issue #184，全局列表；DSH 引擎下为空） */
 		schedulerTasks: SchedulerTaskView[];
 		/** 公开远程 MCP 市场检索结果 */
+		mcpOAuthResult?: Extract<import("../types").ServerMessage, { type: "mcp_oauth_result" }> | null;
 		mcpMarketResult?: {
 			ok: boolean;
 			servers: RemoteMcpServer[];
@@ -649,6 +650,8 @@ interface SettingsPatch {
 	toolApprovalEnabled?: boolean;
 	editSoftEnabled?: boolean;
 	questionnaireEnabled?: boolean;
+	questionPresentation?: "queue" | "all" | "manual";
+	questionTimeoutSeconds?: number;
 	goalModeEnabled?: boolean;
 	parallelReminderEnabled?: boolean;
 	thinkingWrap?: boolean;
@@ -3882,6 +3885,38 @@ export function SettingsModal({
 									enabled={settings.questionnaireEnabled}
 									onToggle={() => setPartial({ questionnaireEnabled: !settings.questionnaireEnabled })}
 								/>
+							</div>
+						)}
+
+						{tab === "display" && (
+							<div className="set-section">
+								<div className="set-section-title">{t("questionQueueTitle")}</div>
+								<FieldRow label={t("questionPresentation")} tip={t("questionPresentationDesc")}>
+									<select
+										className="set-input"
+										value={settings.questionPresentation ?? "queue"}
+										onChange={(e) => setPartial({ questionPresentation: e.target.value as "queue" | "all" | "manual" })}
+									>
+										<option value="queue">{t("questionPresentationQueue")}</option>
+										<option value="all">{t("questionPresentationAll")}</option>
+										<option value="manual">{t("questionPresentationManual")}</option>
+									</select>
+								</FieldRow>
+								<FieldRow label={t("questionTimeoutSeconds")} tip={t("questionTimeoutSecondsDesc")}>
+									<input
+										className="set-input"
+										type="number"
+										min={0}
+										max={86400}
+										step={1}
+										value={settings.questionTimeoutSeconds ?? 240}
+										onChange={(e) => {
+											const value = Number(e.target.value);
+											if (Number.isSafeInteger(value) && value >= 0 && value <= 86400)
+												setPartial({ questionTimeoutSeconds: value });
+										}}
+									/>
+								</FieldRow>
 							</div>
 						)}
 

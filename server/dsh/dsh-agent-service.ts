@@ -25,6 +25,7 @@
  * BgServerTracker（后台任务）、TerminalManager（PTY）、uploads.ts。
  */
 
+import { startTurnTiming, finishTurnTiming } from "../turn-timing.js";
 import { DEFAULT_DSH_CAPABILITIES } from "../engine-capabilities.js";
 import type { AgentEngineCapabilities } from "../protocol.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -217,6 +218,7 @@ interface DshConversation {
 	messageIds: Set<string>;
 	streaming: DshStreamAccumulator | null;
 	isStreaming: boolean;
+	turnTiming?: UiState["turnTiming"];
 	queue: { steering: string[]; followUp: string[] };
 	deltaSeq: number;
 	lastEventAt: number;
@@ -719,6 +721,7 @@ export class DshClientSession {
 		console.error(`[dsh] runtime 意外退出 (client=${this.clientId}) code=${code} signal=${signal}`);
 		// 进行中的 run 全部中断（pending RPC 已被 failPending reject）→ 复位 streaming。
 		for (const conv of this.convs.values()) {
+			finishTurnTiming(conv);
 			conv.isStreaming = false;
 			conv.streaming = null;
 			// 直播帧能力跟着运行时进程走：重启后重新探测（换运行时版本也能回落到持久 assistant/chunk）。
@@ -1609,6 +1612,8 @@ export class DshClientSession {
 		if (!conv) return;
 		const was = conv.isStreaming;
 		conv.isStreaming = params.status === "running";
+		if (conv.isStreaming) startTurnTiming(conv);
+		else finishTurnTiming(conv);
 		conv.lastEventAt = Date.now();
 		if (was && !conv.isStreaming) {
 			// run 结束：清 streaming + 刷新会话列表。
@@ -1744,6 +1749,7 @@ export class DshClientSession {
 			rev,
 			streamingMessage: conv.streaming ? conv.streaming.toUiMessage(conv.lastEventAt, this.model, "deepseek") : null,
 			isStreaming: conv.isStreaming,
+			turnTiming: conv.turnTiming ?? null,
 			draft: this.sessionDrafts.get(conv.sessionId) ?? null,
 			model: {
 				id: this.model,
@@ -1991,7 +1997,7 @@ export class DshClientSession {
 	/** 语义同 pi 引擎的 newChat：true = 当前活动对话是可接收首条的空白新对话
 	 *  （/new <prompt> 靠它决定要不要把首条提示发出去）。preset = 新会话预设
 	 *  （复用空白会话时等价一次空白切换）。 */
-	async newChat(preset?: string): Promise<boolean> {
+	async newChat(preset?: string, _ephemeral?: boolean, onReady?: (id: string) => void): Promise<boolean> {
 		if (this.switchingWorkspace) return false;
 		if (this.quiesceBlocked()) return false;
 		const active = this.conv;
@@ -2001,6 +2007,7 @@ export class DshClientSession {
 				this.pushSettings();
 				this.flushSnapshot();
 			}
+			onReady?.(active.id);
 			return true;
 		}
 		for (const conv of this.convs.values()) {
@@ -2009,6 +2016,7 @@ export class DshClientSession {
 				this.switchConversation(conv.id);
 				if (preset) await this.selectAgentPreset(preset);
 				else this.flushSnapshot();
+				onReady?.(conv.id);
 				return true;
 			}
 		}
@@ -2035,6 +2043,7 @@ export class DshClientSession {
 		this.pushSettings();
 		this.flushSnapshot();
 		void this.refreshActivePermission().catch(() => {});
+		onReady?.(conv.id);
 		return true;
 	}
 
@@ -2073,6 +2082,7 @@ export class DshClientSession {
 
 	async prompt(text: string, attachments?: PromptAttachment[], queue = false): Promise<void> {
 		if (this.switchingWorkspace) return;
+		let conv = this.conv;
 		const trimmedText = (text ?? "").trim();
 		const hasAttachments = Boolean(attachments && attachments.length > 0);
 		if (!trimmedText && !hasAttachments) {
@@ -2096,7 +2106,7 @@ export class DshClientSession {
 				return;
 			}
 		}
-		let conv = this.conv;
+		if (this.conv !== conv || this.switchingWorkspace) return;
 		this.markerSvc.clearActions(conv.id);
 		// issue #145：同文件守卫 —— 别处正在跑同一 sessionId 时拒绝发送（不造第二个 writer）。
 		const fileOwner = this.findSessionOwnerById?.(conv.sessionId);
@@ -2261,6 +2271,7 @@ export class DshClientSession {
 		try {
 			assertEngineWorkspaceSupported(this.sandboxes, conv.cwd, "dsh");
 			if (this.quiesceBlocked()) return;
+			startTurnTiming(conv);
 			conv.promptedSinceActive = true;
 			conv.lastEventAt = Date.now();
 			// Agent 预设：运行时世代过期 → 重登 preset/assign（创建时消费；
@@ -2336,6 +2347,7 @@ export class DshClientSession {
 				this.emitConversations();
 			}
 		} catch (err) {
+			if (!conv.isStreaming) finishTurnTiming(conv);
 			// 发送失败事务补偿：回滚乐观用户消息与排队气泡
 			if (optimisticId) {
 				const optIdx = conv.messages.findIndex((m) => m.id === optimisticId);
@@ -2559,6 +2571,7 @@ export class DshClientSession {
 		this.cancelBridgedTools();
 		if (!this.runtime.alive) return;
 		const conv = this.conv;
+		finishTurnTiming(conv);
 		conv.isStreaming = false;
 		conv.streaming = null;
 		this.emitConversations();

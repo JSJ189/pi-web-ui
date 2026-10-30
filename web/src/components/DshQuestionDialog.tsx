@@ -28,7 +28,7 @@ interface QuestionItem {
 interface DshQuestionDialogProps {
 	question: {
 		id: string;
-		/** 服务端超时时间戳（epoch ms）——显示倒计时，归零自动取消。 */
+		/** 服务端超时时间戳（epoch ms）——仅显示倒计时，由服务端处理超时。 */
 		deadline?: number;
 		conversationId?: string;
 		conversationTitle?: string;
@@ -38,6 +38,8 @@ interface DshQuestionDialogProps {
 	owner?: string;
 	/** 备用对话标题（当 question 中未携带时兜底使用）。 */
 	conversationTitle?: string;
+	onDefer?: () => void;
+	onNavigate?: () => void;
 }
 
 /**
@@ -45,7 +47,7 @@ interface DshQuestionDialogProps {
  * 向导式：每次只显示一道题。
  *  - 单选：点选项即选中并自动进入下一题；最后一题点选项直接提交。
  *  - 多选/自由文本：勾选或输入后用「下一步/提交」推进，「上一步」可回头修改。
- *  - ✗ / Esc / 底部「取消」→ 取消提问；提交与取消都会立即收起本面板
+ *  - ✗ / Esc → onDefer（队列）或取消；底部「取消」始终显式取消。提交与取消立即收起本面板
  *    （use-chat 在发出 question_answer 后置空 question）。
  * 选中带 `preview` 的选项时在下方预览其 markdown/HTML 内容。
  * 复用 .dialog-inline 样式（非模态，对话保持可见）。
@@ -53,7 +55,7 @@ interface DshQuestionDialogProps {
  * 文本渲染：question/detail/description/preview 统一走 Markdown（rawHtml），
  * 模型可自由写 markdown 或 HTML —— 由模型自选、信任模型。
  */
-export function DshQuestionDialog({ question, owner, conversationTitle }: DshQuestionDialogProps) {
+export function DshQuestionDialog({ question, owner, conversationTitle, onDefer, onNavigate }: DshQuestionDialogProps) {
 	const t = useT();
 	const convTitle = question.conversationTitle || conversationTitle;
 	const [selections, setSelections] = useState<Record<string, string[]>>(() => {
@@ -72,7 +74,7 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		const draft = loadQuestionDraft(question.id);
 		return draft?.step ?? 0;
 	});
-	// P0-6：倒计时（秒），归零自动取消提问（服务端同样超时 reject）。
+	// Display only: the server owns timeout resolution.
 	const [remainSec, setRemainSec] = useState<number>(() =>
 		question.deadline ? Math.max(0, Math.ceil((question.deadline - Date.now()) / 1000)) : -1,
 	);
@@ -95,18 +97,6 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 		setCollapsed(false);
 		const remain = question.deadline ? Math.max(0, Math.ceil((question.deadline - Date.now()) / 1000)) : -1;
 		setRemainSec(remain);
-		// 审查 #9：挂载时已过期的提问立即取消 —— 下面的定时器分支（s > 0 才发）
-		// 永远不会触发，过期提问会一直挂着等用户手点或服务端超时。
-		if (question.deadline && remain <= 0) {
-			clearQuestionDraft(question.id);
-			appSend({
-				type: "question_answer",
-				id: question.id,
-				answers: [],
-				cancelled: true,
-				...(owner ? { owner } : {}),
-			});
-		}
 	}, [question.id, question.deadline, owner]);
 
 	// 草稿自动暂存：作答状态变更时即时同步到持久化存储（切会话/刷新防丢）
@@ -118,27 +108,13 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 	useEffect(() => {
 		if (!question.deadline) return;
 		const id = setInterval(() => {
-			setRemainSec((s) => {
-				const next = Math.max(0, Math.ceil((question.deadline! - Date.now()) / 1000));
-				if (next <= 0 && s > 0) {
-					// 归零 → 自动取消（服务端超时 reject 模型提问，对话继续）。
-					clearQuestionDraft(question.id);
-					appSend({
-						type: "question_answer",
-						id: question.id,
-						answers: [],
-						cancelled: true,
-						...(owner ? { owner } : {}),
-					});
-				}
-				return next;
-			});
+			setRemainSec(Math.max(0, Math.ceil((question.deadline! - Date.now()) / 1000)));
 		}, 1000);
 		return () => clearInterval(id);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [question.id, question.deadline]);
 
-	/** 取消提问：✕ / Esc / 底部「取消」/「驳回并附言」与自动取消共用同一出口。 */
+	/** Explicit cancellation clears the draft; queue dismissal uses onDefer instead. */
 	const cancel = useCallback(
 		(reason?: string) => {
 			submittedRef.current = true;
@@ -159,7 +135,8 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 	// 多层弹窗叠开时内层优先消费，不再裸 document 监听抢 Esc。
 	// 折叠态暂停 Esc 取消，避免用户在折叠查看上下文时误触 Esc 取消提问。
 	useEscapeKey(() => {
-		cancel();
+		if (onDefer) onDefer();
+		else cancel();
 	}, !collapsed);
 
 	const isQuestionVisible = (qq: QuestionItem, sel: Record<string, string[]>): boolean => {
@@ -202,7 +179,12 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 							{convTitle}
 						</span>
 					)}
-					<button type="button" className="dialog-dismiss" title={t("cancel")} onClick={() => cancel()}>
+					<button
+						type="button"
+						className="dialog-dismiss"
+						title={t(onDefer ? "questionQueueDefer" : "cancel")}
+						onClick={() => (onDefer ? onDefer() : cancel())}
+					>
 						✕
 					</button>
 				</div>
@@ -356,6 +338,18 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 					</span>
 				)}
 				<div className="dialog-head-actions">
+					{onNavigate && (
+						<button
+							type="button"
+							className="btn"
+							onClick={(e) => {
+								e.stopPropagation();
+								onNavigate();
+							}}
+						>
+							{t("questionQueueNavigate")}
+						</button>
+					)}
 					<button
 						type="button"
 						className="dialog-toggle-collapse"
@@ -370,10 +364,13 @@ export function DshQuestionDialog({ question, owner, conversationTitle }: DshQue
 					<button
 						type="button"
 						className="dialog-dismiss"
-						title={hasRejectNote ? t("modelQuestionRejectWithNoteTip") : t("cancel")}
+						title={
+							onDefer ? t("questionQueueDefer") : hasRejectNote ? t("modelQuestionRejectWithNoteTip") : t("cancel")
+						}
 						onClick={(e) => {
 							e.stopPropagation();
-							cancel(hasRejectNote ? rejectReason : undefined);
+							if (onDefer) onDefer();
+							else cancel(hasRejectNote ? rejectReason : undefined);
 						}}
 					>
 						✕

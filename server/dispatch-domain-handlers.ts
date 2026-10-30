@@ -148,6 +148,9 @@ export function handleScmMessage(msg: ClientMessage, cs: DispatchSession, send: 
 				});
 			}
 			return true;
+		case "refresh_worktrees":
+			void cs.refreshWorktreeInfo?.();
+			return true;
 		case "switch_worktree":
 			void cs.switchWorktree?.(msg.path);
 			return true;
@@ -440,11 +443,30 @@ export function handleTerminalMessage(msg: ClientMessage, cs: DispatchSession): 
 }
 
 /** 会话生命周期与分支管理相关操作 */
-export function handleSessionLifecycleMessage(msg: ClientMessage, cs: DispatchSession): boolean {
+export function handleSessionLifecycleMessage(
+	msg: ClientMessage,
+	cs: DispatchSession,
+	send?: (message: ServerMessage) => void,
+): boolean {
 	switch (msg.type) {
-		case "new_chat":
-			void cs.newChat(msg.preset, msg.ephemeral);
+		case "new_chat": {
+			let acknowledged = false;
+			const acknowledge = (conversationId?: string) => {
+				if (!msg.requestId || acknowledged) return;
+				acknowledged = true;
+				send?.({
+					type: "new_chat_result",
+					requestId: msg.requestId,
+					ok: !!conversationId,
+					...(conversationId ? { conversationId } : {}),
+				});
+			};
+			void cs
+				.newChat(msg.preset, msg.ephemeral, acknowledge)
+				.then(() => acknowledge())
+				.catch(() => acknowledge());
 			return true;
+		}
 		case "edit_message":
 			void cs.editMessage(msg.messageId, msg.text, msg.attachments);
 			return true;
@@ -635,7 +657,11 @@ export function handleScheduleMessage(
 }
 
 /** 设置面板、自定义斜杠命令与扩展重载相关操作 */
-export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): boolean {
+export function handleSettingsMessage(
+	msg: ClientMessage,
+	cs: DispatchSession,
+	send?: (message: ServerMessage) => void,
+): boolean {
 	switch (msg.type) {
 		case "list_commands":
 			void cs.listCommands();
@@ -671,6 +697,8 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 				toolApprovalEnabled: (msg as { toolApprovalEnabled?: boolean }).toolApprovalEnabled,
 				editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
 				questionnaireEnabled: (msg as { questionnaireEnabled?: boolean }).questionnaireEnabled,
+				questionPresentation: msg.questionPresentation,
+				questionTimeoutSeconds: msg.questionTimeoutSeconds,
 				parallelReminderEnabled: (msg as { parallelReminderEnabled?: boolean }).parallelReminderEnabled,
 				goalModeEnabled: (msg as { goalModeEnabled?: boolean }).goalModeEnabled,
 				thinkingWrap: msg.thinkingWrap,
@@ -715,6 +743,19 @@ export function handleSettingsMessage(msg: ClientMessage, cs: DispatchSession): 
 			return true;
 		case "extensions_reload":
 			void cs.reloadExtensions();
+			return true;
+		case "mcp_oauth_start":
+		case "mcp_oauth_finish":
+		case "mcp_oauth_status":
+		case "mcp_oauth_cancel":
+			if (cs.handleMcpOAuth) void cs.handleMcpOAuth(msg);
+			else
+				send?.({
+					type: "mcp_oauth_result",
+					reqId: msg.reqId,
+					status: "error",
+					error: "MCP OAuth is unavailable in this session.",
+				});
 			return true;
 		case "save_mcp_server":
 			void cs.saveMcpServer?.(msg.server, msg.prevName, msg.prevScope);

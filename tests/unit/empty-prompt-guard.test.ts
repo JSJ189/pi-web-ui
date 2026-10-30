@@ -12,6 +12,7 @@ describe("empty prompt backend guard", () => {
 		const cs = {
 			emit: (msg: unknown) => emitted.push(msg),
 			flushSnapshot,
+			assertSubagentWorktreeAdmission: vi.fn(),
 			drafts: { clear: draftsClear },
 			conv: { session: { sessionId: "sid-1" } },
 			session: { prompt: sessionPrompt },

@@ -28,6 +28,12 @@ GitHub Actions ubuntu-latest（`.github/workflows/ci.yml`，push/PR → main 触
 
 `dist/` 由跑器在开跑前**串行构建一次**（CI 已在 Build 步骤构建过，可用 `--no-build` 跳过）。用例侧一律走 `tests/lib/ensure-build.mjs`，**不要**自己 `execSync("npm run build")`：默认 4 worker 并行下，一个用例重写 `dist/` 时另一个正在 `spawn dist/server/index.js`，会出「测试插件没被激活」之类与被测逻辑无关的假红。
 
+## 前端构建更新与旧页面
+
+`web/vite.config.ts` 不清空整个输出目录；`web/build-assets.ts` 在构建成功后保留当前与上一轮的 assets，并清理更早的文件，避免已打开页面在首次打开文件预览、设置等面板时请求已删除的懒加载模块。`.build-assets.json` 记录当前一轮资源；首次迁移时把已有 assets 作为上一轮保留。完整替换安装目录仍可能失去旧资源。
+
+`web/src/chunk-recovery.ts` 统一处理 Vite preload 错误与根错误边界中的模块加载失败，通过 sessionStorage 记录恢复次数：同一构建最多自动刷新一次，跨构建至少间隔一分钟；持久错误或存储不可用时保留手动重试界面，避免循环刷新。一般应用异常不会触发自动刷新。
+
 ## 编码约定
 
 - **缩进用 Tab**；前端组件小写文件名（`copy-button.tsx` 例外）；代码注释中英混写，UI 文案默认中文。

@@ -136,9 +136,11 @@ describe("sandbox execution ownership and lifecycle", () => {
 		const { sandbox } = await mgr.create({});
 		const owner = client(mgr);
 		owner.subagentOwnerOf = () => owner;
-		owner.convs.set("inside", { cwd: sandbox.path });
-		owner.convs.set("outside", { cwd: tmpdir() });
-		await expect(owner.handoffSubagent("inside", "outside", "payload")).rejects.toThrow(/cannot leave/);
+		owner.convs.set("inside", { id: "inside", cwd: sandbox.path, session: {} });
+		owner.convs.set("outside", { id: "outside", cwd: tmpdir(), session: {} });
+		await expect(owner.handoffSubagent("inside", "outside", "payload")).rejects.toThrow(
+			/Cross-project|sandbox boundaries/,
+		);
 	});
 	it("holds a lease until execution settles and releases it after rejection", async () => {
 		const mgr = manager();

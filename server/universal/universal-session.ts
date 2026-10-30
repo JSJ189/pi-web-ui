@@ -8,6 +8,7 @@
  *   4. 无缝复用宿主 FilesService（文件树/预览/SCM/上传）、TerminalManager（终端）与 BgServerTracker（后台服务）。
  */
 
+import { startTurnTiming, finishTurnTiming } from "../turn-timing.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -657,6 +658,7 @@ export class UniversalSession implements DispatchSession {
 			// 回合归属会话才携带流式态：切走后的前台会话快照不再混入后台回合内容（#701）
 			streamingMessage: !this.turnConvId || this.turnConvId === conv.id ? this.streamingMessage : null,
 			isStreaming: !this.turnConvId || this.turnConvId === conv.id ? this.isStreaming : false,
+			turnTiming: conv.turnTiming ?? null,
 			isEphemeral: Boolean(conv.isEphemeral),
 			draft: this.sessionDrafts.get(conv.id) ?? null,
 			model: {
@@ -718,6 +720,10 @@ export class UniversalSession implements DispatchSession {
 	private static isDefaultTitle(title?: string): boolean {
 		const t = (title ?? "").trim();
 		return !t || t === "新对话" || t === "New chat" || t === "New Chat" || t === "对话" || t === "Chat";
+	}
+
+	activeConversationId(): string {
+		return this.activeConvId;
 	}
 
 	async prompt(
@@ -799,9 +805,10 @@ export class UniversalSession implements DispatchSession {
 		}
 
 		if (this.switchingProject || this.disposed || this.abortPromise || generation !== this.projectGeneration) return;
-		this.isStreaming = true;
 		if (this.activeConv !== targetConv) return;
+		this.isStreaming = true;
 		const conv = targetConv;
+		startTurnTiming(conv);
 		const turn = { conv, cwd: this.cwd };
 		this.turn = turn;
 		const isCurrent = () => this.turn === turn && !this.disposed;
@@ -1060,6 +1067,7 @@ export class UniversalSession implements DispatchSession {
 			}
 		}
 
+		finishTurnTiming(conv);
 		this.isStreaming = false;
 		this.streamingThinking = "";
 		// 先取本轮全文再清空：内联标记解析在清空之后读 streamingText，
@@ -1136,7 +1144,7 @@ export class UniversalSession implements DispatchSession {
 	// 对话生命周期
 	// ---------------------------------------------------------------------------
 
-	async newChat(_preset?: string, ephemeral = false): Promise<boolean | void> {
+	async newChat(_preset?: string, ephemeral = false, onReady?: (id: string) => void): Promise<boolean | void> {
 		const newConv = this.createEmptyConversation("新对话", Boolean(ephemeral));
 		this.conversations.set(newConv.id, newConv);
 		this.activeConvId = newConv.id;
@@ -1145,6 +1153,7 @@ export class UniversalSession implements DispatchSession {
 		}
 		this.flushSnapshot(true);
 		void this.refreshSessions();
+		onReady?.(newConv.id);
 		return true;
 	}
 
@@ -1897,12 +1906,12 @@ export class UniversalSession implements DispatchSession {
 		this.flushSnapshot();
 	}
 
-	private async refreshWorktreeInfo(): Promise<void> {
-		try {
-			this.worktreeInfo = await getWorktreeContext(this.cwd);
-		} catch {
-			this.worktreeInfo = null;
-		}
+	async refreshWorktreeInfo(): Promise<void> {
+		const cwd = this.cwd;
+		const info = await getWorktreeContext(cwd);
+		if (this.cwd !== cwd) return;
+		this.worktreeInfo = info;
+		this.flushSnapshot();
 	}
 
 	/** 获取通用底座持有的持久终端交互工具集 */
@@ -2864,8 +2873,11 @@ export class UniversalSession implements DispatchSession {
 		persist = false,
 		title?: string,
 		_thinking?: string,
-		_notifyOnDone?: boolean,
+		_notifyOnDone?: boolean | "manual",
 	): Promise<{ convId: string }> {
+		if (_notifyOnDone === "manual") {
+			throw new Error("notifyOnDone=manual is only supported by the pi engine.");
+		}
 		assertEngineWorkspaceSupported(this.sandboxes, cwd, this.engine);
 		if (this.switchingProject || this.disposed) throw new Error("Workspace is switching");
 		const generation = this.projectGeneration;

@@ -71,6 +71,29 @@ describe("subagent-notify (Issue #713)", () => {
 			expect(formatSubagentsCompletionNotice([])).toBe("");
 		});
 
+		it("uses explicit manual summaries only on successful completion", () => {
+			const conv = makeMockConv({ id: "manual", output: "Final assistant body" });
+			conv.subagentTask = { mode: "manual", completionRequested: true, generation: 0, summary: "Task deliverable" };
+			expect(formatSubagentsCompletionNotice([conv])).toContain("Task deliverable");
+			expect(formatSubagentsCompletionNotice([conv])).not.toContain("Final assistant body");
+			conv.subagentTask.summary = " ";
+			expect(formatSubagentsCompletionNotice([conv])).toContain("Final assistant body");
+			conv.subagentTask.summary = "Stale success";
+			conv.subagentTask.mode = true;
+			expect(formatSubagentsCompletionNotice([conv])).toContain("Final assistant body");
+		});
+
+		it.each([{ error: "Failed after complete" }, { canceled: true }])(
+			"preserves failure output after completion intent: %j",
+			(outcome) => {
+				const conv = makeMockConv({ id: "manual-failed", output: "Failure details", ...outcome });
+				conv.subagentTask = { mode: "manual", completionRequested: true, generation: 0, summary: "Stale success" };
+				const notice = formatSubagentsCompletionNotice([conv]);
+				expect(notice).toContain("Failure details");
+				expect(notice).not.toContain("Stale success");
+			},
+		);
+
 		it("正常完成单子代理生成结构化汇报（中文）", () => {
 			const conv = makeMockConv({
 				id: "sa-12345678-abcd",
@@ -141,11 +164,15 @@ describe("subagent-notify (Issue #713)", () => {
 			};
 
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				flushSnapshot: vi.fn(),
 				emit: vi.fn(),
 				scheduleSubagentCompletionNotice: (ClientSession.prototype as any).scheduleSubagentCompletionNotice,
@@ -205,11 +232,15 @@ describe("subagent-notify (Issue #713)", () => {
 			};
 
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				flushSnapshot: vi.fn(),
 				emit: vi.fn(),
 				scheduleSubagentCompletionNotice: (ClientSession.prototype as any).scheduleSubagentCompletionNotice,
@@ -239,11 +270,15 @@ describe("subagent-notify (Issue #713)", () => {
 			};
 
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				flushSnapshot: vi.fn(),
 				emit: vi.fn(),
 				scheduleSubagentCompletionNotice: (ClientSession.prototype as any).scheduleSubagentCompletionNotice,
@@ -308,11 +343,15 @@ describe("subagent-notify (Issue #713)", () => {
 
 			const emit = vi.fn();
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				settingsSvc: {
 					current: {
 						subagentAutoWakeMaxTurns: 2, // 上限配置为 2
@@ -384,11 +423,15 @@ describe("subagent-notify (Issue #713)", () => {
 			};
 
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				settingsSvc: {
 					current: {
 						subagentAutoWakeMaxTurns: 0, // 0 = 不限制
@@ -428,11 +471,15 @@ describe("subagent-notify (Issue #713)", () => {
 
 			const emit = vi.fn();
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				settingsSvc: {
 					current: {
 						subagentAutoWakeMaxTurns: 5,
@@ -479,11 +526,15 @@ describe("subagent-notify (Issue #713)", () => {
 
 			const emit = vi.fn();
 			const cs: any = {
+				refreshCompletionState: (ClientSession.prototype as any).refreshCompletionState,
+				deliverSubagentCompletionNotice: (ClientSession.prototype as any).deliverSubagentCompletionNotice,
+				emitConversations: vi.fn(),
 				cwd: "/test",
 				getLang: () => "zh",
 				subagentOwnerOf: () => cs,
 				convs: new Map([["parent-c1", parentConv]]),
 				pendingSubagentNotices: new Map(),
+				deliveringSubagentNotices: new Map(),
 				settingsSvc: {
 					current: {
 						subagentAutoWakeMaxTurns: 5,
@@ -567,6 +618,7 @@ describe("subagent-notify (Issue #713)", () => {
 				drafts: { clear: vi.fn() },
 				drainSuspendedSubagents: (ClientSession.prototype as any).drainSuspendedSubagents,
 				prompt: (ClientSession.prototype as any).prompt,
+				assertSubagentWorktreeAdmission: vi.fn(),
 			};
 
 			// 用户发送新指令
@@ -643,6 +695,7 @@ describe("subagent-notify (Issue #713)", () => {
 				drafts: { clear: vi.fn() },
 				drainSuspendedSubagents: (ClientSession.prototype as any).drainSuspendedSubagents,
 				prompt: (ClientSession.prototype as any).prompt,
+				assertSubagentWorktreeAdmission: vi.fn(),
 			};
 
 			await cs.prompt("");

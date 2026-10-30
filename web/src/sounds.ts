@@ -13,6 +13,8 @@ export interface SoundSettings {
 	question: boolean;
 	/** The agent finished a run (streaming ended). */
 	done: boolean;
+	/** A subagent finished a run. */
+	subagentDone: boolean;
 	/** A run started (first streamed token of a new run). */
 	start: boolean;
 	/** An error notice was raised. */
@@ -23,7 +25,7 @@ export interface SoundSettings {
 	volume: number;
 }
 
-export type SoundKind = "question" | "done" | "start" | "error" | "approval";
+export type SoundKind = "question" | "done" | "subagentDone" | "start" | "error" | "approval";
 
 const STORAGE_KEY = "pi-web-sounds";
 
@@ -31,6 +33,7 @@ const DEFAULT_SOUND_SETTINGS: SoundSettings = {
 	enabled: true,
 	question: true,
 	done: true,
+	subagentDone: true,
 	start: false,
 	error: true,
 	approval: true,
@@ -44,9 +47,13 @@ export function loadSoundSettings(): SoundSettings {
 		if (!raw) return { ...DEFAULT_SOUND_SETTINGS };
 		const parsed = JSON.parse(raw) as Partial<SoundSettings>;
 		const merged: SoundSettings = { ...DEFAULT_SOUND_SETTINGS, ...parsed };
+		// Preserve the previous completion preference when upgrading old settings.
+		if (parsed.subagentDone === undefined && typeof parsed.done === "boolean") {
+			merged.subagentDone = parsed.done;
+		}
 		// Sanitize stored values so a corrupted or out-of-range entry can't
 		// break the slider or the volume math.
-		for (const k of ["enabled", "question", "done", "start", "error", "approval"] as const) {
+		for (const k of ["enabled", "question", "done", "subagentDone", "start", "error", "approval"] as const) {
 			if (typeof merged[k] !== "boolean") merged[k] = DEFAULT_SOUND_SETTINGS[k];
 		}
 		if (typeof merged.volume !== "number" || !Number.isFinite(merged.volume)) {
@@ -129,6 +136,7 @@ const APPROVAL: Note[] = [
 const PATTERNS: Record<SoundKind, Note[]> = {
 	question: QUESTION,
 	done: DONE,
+	subagentDone: DONE,
 	start: START,
 	error: ERROR,
 	approval: APPROVAL,

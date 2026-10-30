@@ -93,7 +93,9 @@ import {
 	isConversationTool,
 } from "./conversation-tool-names.js";
 
-export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule"]);
+// Every communication action can carry instructions, including replies and escalations.
+// Plan/delegate/goal reviewers must not direct execution through another conversation.
+export const SESSION_DISPATCH_TOOLS = new Set<string>(["delegate_task", "schedule", "communicate"]);
 
 /**
  * 计划模式下也禁掉的「旁路工具」（真实派发类，见 SESSION_DISPATCH_TOOLS）：

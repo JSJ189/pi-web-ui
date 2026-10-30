@@ -36,6 +36,8 @@ export const LEGACY_TERMINAL_TOOL_NAMES = [
 
 /** 第一方子代理工具（定义见 subagents.ts，统一为单 action 工具）。 */
 export const CONVERSATION_TOOL_NAME = "conversation";
+/** Structured communication between execution conversations. */
+export const COMMUNICATE_TOOL_NAME = "communicate";
 export const SUBAGENT_TOOL_NAME = "subagent";
 export const SUBAGENT_TOOL_NAMES = [CONVERSATION_TOOL_NAME, SUBAGENT_TOOL_NAME] as const;
 
@@ -146,6 +148,13 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		defaultOn: true,
 		dshVisible: false,
 	})),
+	{
+		name: COMMUNICATE_TOOL_NAME,
+		group: "subagent",
+		defaultOn: true,
+		dshVisible: false,
+		descKey: "Read your inbox, send messages, request decisions, reply, or escalate between execution conversations.",
+	},
 	{
 		name: EDIT_SOFT_TOOL_NAME,
 		group: "other",

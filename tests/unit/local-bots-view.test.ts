@@ -91,6 +91,34 @@ async function save() {
 }
 const posted = (fetcher: Awaited<ReturnType<typeof mount>>) =>
 	JSON.parse(fetcher.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body as string);
+it("opens a modal drawer and restores the page when dismissed with Escape", async () => {
+	const previousOverflow = document.body.style.overflow;
+	await mount([bot]);
+	await click("Helper");
+	const drawer = host.querySelector<HTMLDialogElement>("dialog.dc-bot-drawer")!;
+	expect(drawer.getAttribute("aria-label")).toBe(en.localBotTitle);
+	expect(drawer.contains(host.querySelector("form"))).toBe(true);
+	expect(drawer.querySelector(".dc-bot-drawer-close")).toBeTruthy();
+	expect(document.body.style.overflow).toBe("hidden");
+	await act(async () => {
+		drawer.dispatchEvent(new Event("cancel", { cancelable: true }));
+	});
+	expect(host.querySelector("dialog.dc-bot-drawer")).toBeNull();
+	expect(document.body.style.overflow).toBe(previousOverflow);
+	expect(host.querySelector(".dc-bot-item")?.textContent).toContain("Helper");
+});
+it("switches configuration tabs without losing unsaved fields", async () => {
+	await mount([bot]);
+	await click("Helper");
+	await input("Description", "Unsaved identity");
+	await click(en.localBotRuntime, host.querySelector('[role="tablist"]')!);
+	expect(host.querySelector<HTMLElement>("#bot-panel-identity")!.hidden).toBe(true);
+	expect(host.querySelector<HTMLElement>("#bot-panel-runtime")!.hidden).toBe(false);
+	await click(en.localBotPermissions, host.querySelector('[role="tablist"]')!);
+	expect(host.querySelector<HTMLElement>("#bot-panel-permissions")!.hidden).toBe(false);
+	await click(en.localBotIdentity, host.querySelector('[role="tablist"]')!);
+	expect(host.querySelector<HTMLTextAreaElement>("#bot-panel-identity textarea")!.value).toBe("Unsaved identity");
+});
 it("saves catalog selections and inherited model while reporting local success on failed Hub sync", async () => {
 	const fetcher = await mount([], false);
 	await click("New Bot");

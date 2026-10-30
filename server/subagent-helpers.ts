@@ -20,7 +20,7 @@ import { SUBAGENT_PROMPT_SNAPSHOT_CAP } from "./agent-formatters.js";
  *  已结束（done / canceled / error）的子代理保留在左栏供用户审阅追溯，不再占名额。 */
 export function isSubagentActive(conv: Conversation): boolean {
 	if (!conv.isSubagent) return false;
-	if (conv.promptInFlight) return true;
+	if (conv.promptInFlight || conv.subagentTaskPending?.()) return true;
 	try {
 		return Boolean(conv.session.isStreaming);
 	} catch {
@@ -42,6 +42,7 @@ export function countActiveSubagents(convs: Iterable<Conversation>, spawningCoun
 export function subagentRunOutcome(conv: Conversation): { error?: string; canceled?: boolean } {
 	// 自动重试等待期结局未定：瞬时 error 不算失败，避免向主对话误报
 	// 「子代理运行失败」（耗尽后 auto_retry_end 清旗，真正失败照常通知）。
+	if (conv.subagentTaskStopped) return { canceled: true };
 	if (conv.retryState) return {};
 	try {
 		const msgs = conv.session.agent.state.messages;
@@ -110,6 +111,7 @@ export function toSubagentSnapshot(conv: Conversation): SubagentSnapshot {
 				: fullPrompt,
 		state,
 		streaming,
+		taskPending: conv.subagentTaskPending?.() ?? false,
 		error,
 		canceled,
 		messageCount,

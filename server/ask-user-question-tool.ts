@@ -7,19 +7,12 @@
 import { Type } from "typebox";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { QuestionAnswer, UiQuestion } from "./protocol.js";
+import type { QuestionResult } from "./pending-question.js";
 
-/**
- * askUser 签名带 {aborted} 快照而非完整 AbortSignal：customTool 的 execute 信号
- * 服务于整个 agent 生命周期，这里按「已中止即拒绝」的最小语义处理，避免与其它
- * 工具的取消逻辑纠缠。
- */
+/** Forward the live signal so cancellation also settles an already pending request. */
 export function makeAskUserQuestionTool(
 	clientSession: {
-		askUser: (
-			q: UiQuestion[],
-			sig: { aborted?: boolean },
-			conversationId?: string,
-		) => Promise<QuestionAnswer[] | { cancelled: true; reason?: string } | null>;
+		askUser: (q: UiQuestion[], sig: AbortSignal, conversationId?: string) => Promise<QuestionResult>;
 	},
 	/** 本 runtime 所属会话：提问跟着对话走，快照只把当前对话的问卷推给客户端。 */
 	ownerId?: string,
@@ -99,13 +92,13 @@ export function makeAskUserQuestionTool(
 					"ask_user_question allows at most 3 questions per call to prevent question fatigue (单次提问最多不得超过 3 个问题)",
 				);
 			}
-			const res = await clientSession.askUser(
-				qs,
-				{
-					aborted: signal?.aborted,
-				},
-				ownerId,
-			);
+			const res = await clientSession.askUser(qs, signal ?? new AbortController().signal, ownerId);
+			if (res && !Array.isArray(res) && "timed_out" in res) {
+				return {
+					content: [{ type: "text", text: "Question timed out. No answer was selected; do not infer user consent." }],
+					details: res,
+				} as never;
+			}
 			if (res === null) {
 				throw new Error("User cancelled the question.\n用户取消了提问。");
 			}

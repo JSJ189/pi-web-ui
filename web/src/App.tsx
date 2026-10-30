@@ -24,7 +24,8 @@ import { FooterBar } from "./components/FooterBar";
 import { formatSessionHash, parseSessionHash } from "./session-url";
 import { SideDock } from "./components/SideDock";
 import { Dialog } from "./components/Dialog";
-import { DshQuestionDialog } from "./components/DshQuestionDialog";
+import { QuestionQueue } from "./components/QuestionQueue";
+import { resolveQuestionQueue } from "./question-queue";
 import { presetText } from "./components/DshPresetBar";
 // 终端视图懒加载：xterm.js 体积大且只在切到终端时才需要，拆出主包
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })));
@@ -1430,21 +1431,27 @@ export function App() {
 			chat.state?.isStreaming ?? false,
 			chat.conversations,
 			prevActiveIdRef.current,
+			!!chat.state?.completionPending || !!chat.state?.queue?.steering.length || !!chat.state?.queue?.followUp.length,
 		);
 		prevStreamingMapRef.current = cues.nextMap;
 		prevActiveIdRef.current = activeId;
 
 		if (cues.startCue) {
 			playSound("start", sound);
+			void notify(t("notifyStartTitle"), t("notifyStartBody"), "start");
 		}
 
 		if (cues.finishedConvs.length > 0) {
-			playSound("done", sound);
+			if (cues.finishedConvs.some((c) => !c.isSubagent && sound.done)) {
+				playSound("done", sound);
+			} else if (cues.finishedConvs.some((c) => c.isSubagent)) {
+				playSound("subagentDone", sound);
+			}
 
 			const activeFinished = cues.finishedConvs.find((c) => c.isActive);
 			if (activeFinished) {
 				// 前台活动对话完成
-				void notify(t("notifyDoneTitle"), t("notifyDoneBody"));
+				void notify(t("notifyDoneTitle"), t("notifyDoneBody"), activeFinished.isSubagent ? "subagentDone" : "done");
 				if (tts.enabled) {
 					if (tts.readReplies) {
 						// 若开启了流式伴读（边打字边开口），内容在生成过程中已经实时朗读，结尾不再重复念；
@@ -1463,13 +1470,22 @@ export function App() {
 			// 且前台完成时让位给正文朗读，不叠加固定句。
 			for (const bg of cues.finishedConvs.filter((c) => !c.isActive)) {
 				const body = bg.title ? `${bg.title}：${t("notifyDoneBody")}` : t("notifyDoneBody");
-				void notify(t("notifyDoneTitle"), body);
+				void notify(t("notifyDoneTitle"), body, bg.isSubagent ? "subagentDone" : "done");
 			}
 			if (!activeFinished && tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) {
 				speak(t("ttsAnnounceDone"), tts);
 			}
 		}
-	}, [chat.state?.conversationId, chat.state?.isStreaming, chat.conversations, sound, tts, t]);
+	}, [
+		chat.state?.conversationId,
+		chat.state?.isStreaming,
+		chat.state?.completionPending,
+		chat.state?.queue,
+		chat.conversations,
+		sound,
+		tts,
+		t,
+	]);
 
 	// ── 流式边打字边开口说话管道（Token-to-Speech Streaming Pipeline） ──
 	const streamSpeechQueueRef = useRef<StreamSpeechQueue | null>(null);
@@ -1542,7 +1558,7 @@ export function App() {
 				if (oldest !== undefined) notifiedDialogIds.current.delete(oldest);
 			}
 			playSound("question", sound);
-			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"), "question");
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 	}, [chat.dialog, sound, tts, t]);
@@ -1582,7 +1598,7 @@ export function App() {
 
 		if (shouldCue) {
 			playSound("question", sound);
-			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"));
+			void notify(t("notifyQuestionTitle"), t("notifyQuestionBody"), "question");
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceQuestion"), tts);
 		}
 	}, [chat.question, chat.remoteQuestion, chat.conversations, sound, tts, t]);
@@ -1602,7 +1618,11 @@ export function App() {
 			}
 			playSound("approval", sound);
 			const tool = typeof approval?.toolName === "string" ? approval.toolName : "";
-			void notify(t("notifyApprovalTitle"), tool ? t("notifyApprovalBodyTool", { tool }) : t("notifyApprovalBody"));
+			void notify(
+				t("notifyApprovalTitle"),
+				tool ? t("notifyApprovalBodyTool", { tool }) : t("notifyApprovalBody"),
+				"approval",
+			);
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceApproval"), tts);
 		}
 	}, [chat.approval, sound, tts, t]);
@@ -1613,7 +1633,7 @@ export function App() {
 		if (err && err.id !== lastErrorNotice.current) {
 			lastErrorNotice.current = err.id;
 			playSound("error", sound);
-			void notify(t("notifyErrorTitle"), t("notifyErrorBody"));
+			void notify(t("notifyErrorTitle"), t("notifyErrorBody"), "error");
 			if (tts.enabled && tts.announce && !shouldSuppressNotify(currentPresence())) speak(t("ttsAnnounceError"), tts);
 		}
 	}, [chat.notices, sound, tts, t]);
@@ -2453,6 +2473,7 @@ export function App() {
 											{chat.state.worktree && (
 												<WorktreeBanner
 													worktree={chat.state.worktree}
+													onRefresh={() => send({ type: "refresh_worktrees" })}
 													onSwitch={(path) => send({ type: "switch_worktree", path })}
 													onRemove={(path, force) => send({ type: "remove_worktree", path, force })}
 												/>
@@ -2731,26 +2752,11 @@ export function App() {
 											)}
 										</div>
 									)}
-									{chat.question && (
-										<DshQuestionDialog
-											question={chat.question}
-											conversationTitle={
-												chat.question.conversationTitle ||
-												chat.conversations.find((c) => c.id === (chat.question?.conversationId || activeConvId))?.title
-											}
-										/>
-									)}
-									{/* 跨页作答：别处会话的问卷在本页弹框（id 对方会话作用域，提交带 owner）。 */}
-									{chat.remoteQuestion && (
-										<DshQuestionDialog
-											question={chat.remoteQuestion}
-											owner={chat.remoteQuestion.owner}
-											conversationTitle={
-												chat.remoteQuestion.conversationTitle ||
-												chat.conversations.find((c) => c.id === chat.remoteQuestion?.convId)?.title
-											}
-										/>
-									)}
+									<QuestionQueue
+										questions={resolveQuestionQueue(chat.questionQueue, chat.question, chat.remoteQuestion)}
+										activeConversationId={activeConvId}
+										mode={chat.settings?.questionPresentation ?? "queue"}
+									/>
 									{/* 任务执行看板 (Plan Mode) */}
 									<PlanBoard
 										plan={

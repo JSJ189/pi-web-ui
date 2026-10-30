@@ -326,6 +326,8 @@ const PRESET_FIELD_KINDS = {
 	toolApprovalEnabled: "bool",
 	toolWatchdogTimeoutMs: "number",
 	questionnaireEnabled: "bool",
+	questionPresentation: "questionPresentation",
+	questionTimeoutSeconds: "questionTimeout",
 	editSoftEnabled: "bool",
 	terminalToolsEnabled: "bool",
 	// -- terminal --------------------------------------------------------
@@ -464,6 +466,14 @@ export function sanitizePresetSettings(input: unknown, opts?: { enabledTools?: u
 			}
 			case "bool":
 				if (typeof raw === "boolean") settings[key] = raw;
+				else rejected.push(key);
+				break;
+			case "questionPresentation":
+				if (raw === "queue" || raw === "all" || raw === "manual") settings[key] = raw;
+				else rejected.push(key);
+				break;
+			case "questionTimeout":
+				if (typeof raw === "number" && Number.isSafeInteger(raw) && raw >= 0 && raw <= 86400) settings[key] = raw;
 				else rejected.push(key);
 				break;
 			case "codemodeMode":

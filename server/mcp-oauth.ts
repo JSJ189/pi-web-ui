@@ -2,16 +2,14 @@
  * OAuth 保护的远端 MCP 服务器的凭据（Issue #786）。
  *
  * pi 的内置 MCP 集成会把登录结果存进 `<agent-dir>/mcp-auth.json`，键为 `mcp__<服务器名>|<url>`
- * （旧版本只写 URL 做键；那种状态这里同样接管）。pi-web-ui 自己的桥从不登录，以前也完全无视这份
- * 凭据，于是每个 OAuth 保护的服务器都止步于 `HTTP 401`。
+ * （旧版本只写 URL 做键；那种状态这里同样接管）。桥接层与网页登录共用这份凭据。
  *
  * 本模块**复用 pi 的凭据库**，而不是再建一份：
  *  - 读出存好的 access token，随请求发 `Authorization: Bearer …`；
  *  - 临近过期或收到 401 时，用存好的 refresh token 换新的；
  *  - 刷新结果按 pi 的格式写回，并复用 pi 的刷新锁（两个进程不会同时刷新）。
  *
- * 登录本身（授权码 + PKCE + 浏览器回调）仍由 `pi mcp login <服务器>` 负责，直到 pi-web-ui 有了
- * 自己的登录界面 —— 见 Issue #786 的后续步骤。
+ * 网页登录（授权码 + PKCE + 浏览器回调）由 mcp-oauth-login.ts 处理；CLI 登录仍然兼容。
  */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
@@ -246,7 +244,7 @@ async function withRefreshLock<T>(
  *  - mtime 超过 10 s 没续期就按遗弃处理（与 proper-lockfile 的默认 stale 一致），
  *    崩溃留下的空锁目录不会永久堵住 pi。
  */
-async function withStoreLock<T>(storePath: string, fn: () => T, signal?: AbortSignal): Promise<T> {
+export async function withMcpAuthStoreLock<T>(storePath: string, fn: () => T, signal?: AbortSignal): Promise<T> {
 	const lockPath = `${storePath}.lock`;
 	mkdirSync(dirname(storePath), { recursive: true, mode: 0o700 });
 	const deadline = Date.now() + STORE_LOCK_WAIT_MS;
@@ -393,7 +391,7 @@ export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise
 		key,
 		async () => {
 			const legacyKey = mcpAuthLegacyKey(options.serverUrl);
-			const { state, sourceKey } = await withStoreLock(
+			const { state, sourceKey } = await withMcpAuthStoreLock(
 				storePath,
 				() => {
 					const store = readMcpAuthStore(options);
@@ -416,7 +414,7 @@ export async function refreshMcpAccessToken(options: McpRefreshOptions): Promise
 			const tokens = await requestRefreshToken(state, options);
 			const nowMs = (options.now ?? Date.now)();
 			const expiresAt = typeof tokens.expires_in === "number" ? nowMs + tokens.expires_in * 1000 : undefined;
-			return withStoreLock(
+			return withMcpAuthStoreLock(
 				storePath,
 				() => {
 					// Compare the grant read before the network call under the SDK store lock.

@@ -17,7 +17,7 @@
 export type PluginSectionKey = `plugin:${string}`;
 
 /** 左栏分区键：三个宿主分区 + 插件自定义分区。 */
-export type LpSectionKey = "projects" | "convs" | "sessions" | PluginSectionKey;
+export type LpSectionKey = "projects" | "groups" | "convs" | "sessions" | PluginSectionKey;
 
 /** 宿主分区键 → 挂载点条目 id（用户偏好与插件 arrange 都用这个 id）。 */
 export const LP_SECTION_ENTRY_ID: Readonly<Record<"projects" | "convs" | "sessions", string>> = {
@@ -90,6 +90,16 @@ export function planLeftSections<E extends LpSectionEntryLike>(
 		if (!seen.has(key)) order.push({ key, shown: true });
 	}
 	return order;
+}
+
+/** 群组紧随可见项目区；项目区隐藏时置顶，并参与同一套权重与分隔条计算。 */
+export function withDeviceGroupSection<E extends LpSectionEntryLike>(
+	plan: readonly LpSectionPlanItem<E>[],
+): LpSectionPlanItem<E>[] {
+	const result = plan.filter((item) => item.key !== "groups");
+	const projectIndex = result.findIndex((item) => item.key === "projects" && item.shown);
+	result.splice(projectIndex + 1, 0, { key: "groups", shown: true });
+	return result;
 }
 
 /**

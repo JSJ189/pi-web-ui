@@ -19,8 +19,14 @@ interface SoundSettingsProps {
 
 const SOUND_EVENTS: {
 	kind: SoundKind;
-	labelKey: "sound.question" | "sound.done" | "sound.start" | "sound.error" | "sound.approval";
-	descKey: "sound.question.desc" | "sound.done.desc" | "sound.start.desc" | "sound.error.desc" | "sound.approval.desc";
+	labelKey: "sound.question" | "sound.done" | "sound.subagentDone" | "sound.start" | "sound.error" | "sound.approval";
+	descKey:
+		| "sound.question.desc"
+		| "sound.done.desc"
+		| "sound.subagentDone.desc"
+		| "sound.start.desc"
+		| "sound.error.desc"
+		| "sound.approval.desc";
 }[] = [
 	{
 		kind: "question",
@@ -28,6 +34,7 @@ const SOUND_EVENTS: {
 		descKey: "sound.question.desc",
 	},
 	{ kind: "done", labelKey: "sound.done", descKey: "sound.done.desc" },
+	{ kind: "subagentDone", labelKey: "sound.subagentDone", descKey: "sound.subagentDone.desc" },
 	{ kind: "start", labelKey: "sound.start", descKey: "sound.start.desc" },
 	{ kind: "error", labelKey: "sound.error", descKey: "sound.error.desc" },
 	{ kind: "approval", labelKey: "sound.approval", descKey: "sound.approval.desc" },

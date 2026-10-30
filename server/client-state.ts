@@ -362,6 +362,8 @@ export interface ClientSettings {
 	editSoftEnabled: boolean;
 	/** 问卷提问开关（默认开；关 → 不弹对话框且 ask_user_question 工具同步禁用。不进预设）。 */
 	questionnaireEnabled: boolean;
+	questionPresentation?: "queue" | "all" | "manual";
+	questionTimeoutSeconds?: number;
 	/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危检测
 	 *  直接放行、插件 pre guard 的 ask 也按放行处理。纯运行开关，不进预设、不需 reload。 */
 	toolApprovalEnabled: boolean;
@@ -1205,6 +1207,14 @@ export class ClientStateStore {
 				stored?.disabledAgentTools !== undefined
 					? deriveLegacy(legacyToDisabled(stored)).questionnaireEnabled
 					: (stored?.questionnaireEnabled ?? true),
+			questionPresentation:
+				stored?.questionPresentation === "all" || stored?.questionPresentation === "manual"
+					? stored.questionPresentation
+					: "queue",
+			questionTimeoutSeconds:
+				Number.isFinite(stored?.questionTimeoutSeconds) && Number(stored?.questionTimeoutSeconds) >= 0
+					? Math.floor(Number(stored?.questionTimeoutSeconds))
+					: 240,
 			goalModeEnabled: stored?.goalModeEnabled ?? true,
 			parallelReminderEnabled: stored?.parallelReminderEnabled ?? true,
 			thinkingWrap: stored?.thinkingWrap ?? false,
@@ -1291,6 +1301,8 @@ export class ClientStateStore {
 			toolApprovalEnabled: settings.toolApprovalEnabled ?? cur.toolApprovalEnabled ?? true,
 			editSoftEnabled: settings.editSoftEnabled ?? cur.editSoftEnabled ?? false,
 			questionnaireEnabled: settings.questionnaireEnabled ?? cur.questionnaireEnabled ?? true,
+			questionPresentation: settings.questionPresentation ?? cur.questionPresentation ?? "queue",
+			questionTimeoutSeconds: settings.questionTimeoutSeconds ?? cur.questionTimeoutSeconds ?? 240,
 			goalModeEnabled: settings.goalModeEnabled ?? cur.goalModeEnabled ?? true,
 			parallelReminderEnabled: settings.parallelReminderEnabled ?? cur.parallelReminderEnabled ?? true,
 			thinkingWrap: settings.thinkingWrap ?? cur.thinkingWrap ?? false,

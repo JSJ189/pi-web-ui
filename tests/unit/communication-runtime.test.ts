@@ -1,0 +1,248 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ClientSession } from "../../server/agent-service.js";
+
+const questions = [{ id: "choice", question: "Proceed?" }];
+const answers = [{ id: "choice", selected: ["yes"] }];
+const owners: any[] = [];
+function holder(id: string) {
+	const cs = Object.create(ClientSession.prototype) as any;
+	Object.assign(cs, {
+		clientId: id,
+		cwd: "/project",
+		disposed: false,
+		convs: new Map(),
+		pendingQuestions: new Map(),
+		pendingPageCalls: new Map(),
+		pendingSubagentNotices: new Map(),
+		deliveringSubagentNotices: new Map(),
+		scheduleSubagentCompletionNotice: vi.fn(),
+		turnEndWaiters: new Map(),
+		settingsSvc: { current: {} },
+		sandboxes: { getExecutionIdentity: () => undefined },
+		emit: vi.fn(),
+		emitConversations: vi.fn(),
+		flushSnapshot: vi.fn(),
+		sendNotice: vi.fn(),
+		checkSubagentWakeCircuitBreaker: () => null,
+		allSubagentSessions: () => owners,
+		findSubagentOwner: (convId: string) => {
+			const session = owners.find((o) => o.convs.has(convId));
+			return session ? { session, convId } : undefined;
+		},
+		planManager: { unbindConversation: vi.fn() },
+		markerSvc: { clearConversation: vi.fn() },
+		clearConversationToolStates: vi.fn(),
+		goalSvc: { notifyConversationRemoved: vi.fn() },
+	});
+	owners.push(cs);
+	return cs;
+}
+function endpoint(owner: any, id: string, parentId?: string) {
+	const conv: any = {
+		id,
+		cwd: "/project",
+		parentId,
+		title: id,
+		session: { isStreaming: false, sendUserMessage: vi.fn().mockResolvedValue(undefined) },
+		terminals: { killAll: vi.fn() },
+		runtime: { dispose: vi.fn().mockResolvedValue(undefined) },
+	};
+	owner.convs.set(id, conv);
+	return conv;
+}
+afterEach(() => {
+	vi.useRealTimers();
+	for (const owner of owners) owner.cancelPendingQuestions();
+	owners.length = 0;
+});
+
+describe("ClientSession communication runtime", () => {
+	it("routes cross-owner sends to the actual busy endpoint and preserves data framing", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "worker", "root-id"),
+			target = endpoint(b, "root-id");
+		target.session.isStreaming = true;
+		await a.communicate(from.id, "send", { to: "parent", message: "Review output" });
+		expect(target.session.sendUserMessage).toHaveBeenCalledWith(
+			expect.stringContaining('"kind":"communication_data"'),
+			{ deliverAs: "steer" },
+		);
+		expect(target.session.sendUserMessage.mock.calls[0][0]).toContain("Review output");
+		expect(a.communicationPending(target)).toBe(false);
+	});
+	it("keeps queued inbox pending until read, and read consumes it once", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to");
+		b.checkSubagentWakeCircuitBreaker = () => ({ suspend: true });
+		await a.communicate(from.id, "send", { to: target.id, message: "queued" });
+		expect(b.sendNotice).toHaveBeenCalledOnce();
+		expect(target.session.sendUserMessage).not.toHaveBeenCalled();
+		expect(b.communicationPending(target)).toBe(true);
+		const result = await b.communicate(target.id, "read", {});
+		expect(result.messages).toEqual([expect.objectContaining({ senderId: expect.any(String), message: "queued" })]);
+		expect(b.communicationPending(target)).toBe(false);
+		expect((await b.communicate(target.id, "read", {})).messages).toEqual([]);
+	});
+	it("registers requests on sender holder and allows only receiver to reply after takeover", async () => {
+		const a = holder("a"),
+			b = holder("b"),
+			c = holder("c");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to"),
+			other = endpoint(c, "other");
+		const pending = a.communicate(from.id, "request", { to: target.id, questions });
+		await Promise.resolve();
+		const request = [...a.pendingQuestions.values()][0];
+		expect(a.getPendingConsults(target.id)).toEqual([
+			expect.objectContaining({ runId: from.id, requestId: request.id }),
+		]);
+		await expect(c.communicate(other.id, "reply", { requestId: request.id, answers })).rejects.toThrow(
+			"Only the request receiver",
+		);
+		b.convs.delete(target.id);
+		c.convs.set(target.id, target);
+		await c.communicate(target.id, "reply", { requestId: request.id, answers });
+		expect((await pending).result).toEqual(answers);
+		expect(a.pendingQuestions.size).toBe(0);
+		expect(a.communicationPending(from)).toBe(false);
+	});
+	it("canceling requester settles remote request and permits later messages", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to");
+		const pending = a.communicate(from.id, "request", { to: target.id, questions });
+		await Promise.resolve();
+		a.settlePendingsForConv(from.id);
+		expect((await pending).result).toMatchObject({ cancelled: true });
+		expect(b.getPendingConsults(target.id)).toEqual([]);
+		await expect(a.communicate(from.id, "send", { to: target.id, message: "next task" })).resolves.toMatchObject({
+			status: "queued",
+		});
+	});
+	it("idle communication restarts a completed manual task and it can notify again", async () => {
+		vi.useFakeTimers();
+		const a = holder("a"),
+			b = holder("b");
+		const root = endpoint(a, "root-id"),
+			sender = endpoint(a, "sender"),
+			target = endpoint(b, "worker", root.id);
+		Object.assign(target, {
+			isSubagent: true,
+			notifyOnDone: "manual",
+			subagentDoneNotified: true,
+			subagentConsumedByParent: true,
+			subagentTask: { mode: "manual", generation: 3, completionRequested: true, summary: "old summary" },
+		});
+		Object.assign(target.session, { getLastAssistantText: () => "new result", agent: { state: { messages: [] } } });
+		b.getLang = () => "en";
+		b.scheduleSubagentCompletionNotice = (ClientSession.prototype as any).scheduleSubagentCompletionNotice;
+		await a.communicate(sender.id, "send", { to: target.id, message: "verify again" });
+		expect(target.subagentTask).toEqual({ mode: "manual", generation: 4, completionRequested: false });
+		expect(target.subagentDoneNotified).toBe(false);
+		await vi.advanceTimersByTimeAsync(500);
+		expect(root.session.sendUserMessage).toHaveBeenCalledWith(expect.stringContaining("new result"), undefined);
+		vi.useRealTimers();
+	});
+	it("user settlement of an escalated request reschedules the idle manual receiver", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to");
+		target.notifyOnDone = "manual";
+		b.checkSubagentWakeCircuitBreaker = () => ({ suspend: true });
+		const pending = a.communicate(from.id, "request", { to: target.id, questions });
+		await Promise.resolve();
+		const request = [...a.pendingQuestions.values()][0];
+		expect(request.audience).toBe("user");
+		b.scheduleSubagentCompletionNotice.mockClear();
+		a.resolveQuestion(request.id, answers);
+		await pending;
+		expect(b.scheduleSubagentCompletionNotice).toHaveBeenCalledWith(target);
+	});
+	it("maps inherited worktree cwd to the main project for cross-owner communication", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const root = endpoint(a, "root-id"),
+			worker = endpoint(b, "worker", root.id),
+			nested = endpoint(b, "nested", worker.id);
+		worker.cwd = "/isolated/task";
+		worker.subagentWorktree = { worktreePath: worker.cwd, mainRepoPath: root.cwd };
+		nested.cwd = "/isolated/task/nested";
+		await expect(b.communicate(nested.id, "send", { to: "root", message: "review worktree" })).resolves.toMatchObject({
+			status: "queued",
+		});
+		expect(root.session.sendUserMessage).toHaveBeenCalledOnce();
+	});
+	it("session-bound sender resolves current owner despite a stale local id collision", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const stale = endpoint(a, "same-id"),
+			moved = endpoint(b, "same-id"),
+			target = endpoint(b, "target");
+		a.findConversationHome = (session: unknown) =>
+			session === moved.session ? { session: b, convId: moved.id } : undefined;
+		b.subagentOwnerOf = (id: string) => (b.convs.has(id) ? b : a);
+		await a.communicateFromSession({ session: moved.session }, "send", { to: target.id, message: "current owner" });
+		expect(target.session.sendUserMessage).toHaveBeenCalledOnce();
+		expect(stale.session.sendUserMessage).not.toHaveBeenCalled();
+		const legacy = a.communicationBoundSubagentHost({ session: moved.session });
+		await legacy.handoffSubagent(stale.id, target.id, "legacy current owner");
+		expect(target.session.sendUserMessage).toHaveBeenCalledTimes(2);
+		moved.parentId = target.id;
+		moved.isSubagent = true;
+		const pending = legacy.consultParent(stale.id, questions);
+		await Promise.resolve();
+		const request = [...b.pendingQuestions.values()][0];
+		expect(request.conversationId).toBe(moved.id);
+		expect(a.pendingQuestions.size).toBe(0);
+		await b.communicate(target.id, "reply", { requestId: request.id, answers });
+		expect(await pending).toEqual(answers);
+		b.subagentHost = { completeSubagent: vi.fn() };
+		legacy.completeSubagent(stale.id, "moved summary");
+		expect(b.subagentHost.completeSubagent).toHaveBeenCalledWith(moved.id, "moved summary");
+		expect(stale.subagentTask).toBeUndefined();
+	});
+	it("stopping idle manual task cancels its request and inbox without interrupting descendants", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to"),
+			nested = endpoint(a, "nested", from.id);
+		Object.assign(from, { isSubagent: true, notifyOnDone: "manual" });
+		from.session.isIdle = true;
+		nested.session.isStreaming = true;
+		a.interruptRun = vi.fn();
+		a.checkSubagentWakeCircuitBreaker = () => ({ suspend: true });
+		await b.communicate(target.id, "send", { to: from.id, message: "queued" });
+		const pending = a.communicate(from.id, "request", { to: target.id, questions });
+		await Promise.resolve();
+		await a.stopSubagentTask(from.id);
+		expect((await pending).result).toMatchObject({ cancelled: true });
+		expect(a.communicationPending(from)).toBe(false);
+		expect(from.subagentTaskStopped).toBe(true);
+		expect(a.interruptRun).not.toHaveBeenCalled();
+		expect(nested.session.isStreaming).toBe(true);
+		expect(a.scheduleSubagentCompletionNotice).toHaveBeenCalledWith(from);
+	});
+	it("closing receiver escalates request to user on surviving sender holder", async () => {
+		const a = holder("a"),
+			b = holder("b");
+		const from = endpoint(a, "from"),
+			target = endpoint(b, "to");
+		const pending = a.communicate(from.id, "request", { to: target.id, questions });
+		await Promise.resolve();
+		b.removeConversation(target.id, true);
+		expect(b.convs.has(target.id)).toBe(false);
+		const request = [...a.pendingQuestions.values()][0];
+		expect(request.audience).toBe("user");
+		expect(a.resolveQuestion(request.id, answers)).toBe(true);
+		expect((await pending).result).toEqual(answers);
+		await expect(a.communicate(from.id, "send", { to: target.id, message: "closed" })).rejects.toThrow(
+			"target not found",
+		);
+	});
+});

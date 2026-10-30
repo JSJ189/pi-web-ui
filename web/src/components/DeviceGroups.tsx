@@ -196,8 +196,9 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 		navigationRevision.current = navigation.revision;
 		if (navigation.create) beginCreate();
 		else if (navigation.roomId) {
+			// App already routes the open request. Consuming it must not emit it again:
+			// a new navigation revision would re-enter this effect indefinitely.
 			selectRoom(navigation.roomId, navigation.manage);
-			if (!navigation.manage) openChat(navigation.roomId);
 		}
 	}, [active, navigation?.revision]);
 	async function save() {

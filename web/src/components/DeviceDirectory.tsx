@@ -63,7 +63,7 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 			return;
 		}
 	}
-	async function openDevice(event: React.MouseEvent<HTMLAnchorElement>, id: string) {
+	async function openDevice(event: React.MouseEvent<HTMLAnchorElement>, id: string, desktop = false) {
 		event.preventDefault();
 		const tab = window.open("about:blank", "_blank");
 		if (!tab) {
@@ -98,6 +98,8 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 				)
 			)
 				throw new Error("Invalid device access URL");
+			url.searchParams.delete("next");
+			if (desktop) url.searchParams.set("next", "/desktop");
 			tab.location.replace(url.href);
 			setError("");
 		} catch (cause) {
@@ -149,16 +151,28 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 							{device.online ? (zh ? "在线" : "Online") : zh ? "离线" : "Offline"}
 						</span>
 						{target(device.id) && (
-							<a
-								className="dc-button"
-								href={target(device.id)}
-								target="_blank"
-								rel="noopener noreferrer"
-								onClick={(event) => void openDevice(event, device.id)}
-							>
-								<FiExternalLink aria-hidden />
-								{zh ? "打开设备" : "Open device"}
-							</a>
+							<div className="dc-actions">
+								<a
+									className="dc-button"
+									href={target(device.id)}
+									target="_blank"
+									rel="noopener noreferrer"
+									onClick={(event) => void openDevice(event, device.id)}
+								>
+									<FiExternalLink aria-hidden />
+									{zh ? "打开设备" : "Open device"}
+								</a>
+								<a
+									className="dc-button"
+									href={`${target(device.id)}/desktop`}
+									target="_blank"
+									rel="noopener noreferrer"
+									onClick={(event) => void openDevice(event, device.id, true)}
+								>
+									<FiMonitor aria-hidden />
+									{zh ? "远程桌面" : "Remote desktop"}
+								</a>
+							</div>
 						)}
 					</div>
 				))}

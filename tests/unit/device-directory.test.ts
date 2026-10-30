@@ -34,7 +34,9 @@ it("lists account devices and links each stable ID through the configured hub", 
 		const links = [...host.querySelectorAll<HTMLAnchorElement>(".dd-device a")];
 		expect(links.map((link) => link.href)).toEqual([
 			"http://82.156.246.55:50001/device/win",
+			"http://82.156.246.55:50001/device/win/desktop",
 			"http://82.156.246.55:50001/device/mac",
+			"http://82.156.246.55:50001/device/mac/desktop",
 		]);
 		expect(links.every((link) => link.rel.includes("noopener"))).toBe(true);
 		expect(host.querySelectorAll(".is-online")).toHaveLength(1);

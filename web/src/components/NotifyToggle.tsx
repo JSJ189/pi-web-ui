@@ -11,6 +11,8 @@ import {
 	isWindowsPlatform,
 	type NotifyDiagnostics,
 	type NotifySettings,
+	NOTIFY_EVENTS,
+	type NotifyEventMode,
 } from "../notify";
 
 /** 设置里的「发送测试通知」诊断面板开关。默认关：一条不听话的通知，是浏览器/系统丢的
@@ -104,6 +106,30 @@ export function NotifyToggle() {
 			</label>
 
 			<div className="sound-hint">{t("notifyEnableDesc")}</div>
+
+			<details>
+				<summary className="sound-row">{t("notifyEventSettings")}</summary>
+				<div className="sound-hint">{t("notifyEventSettingsDesc")}</div>
+				{NOTIFY_EVENTS.map((kind) => (
+					<label className="sound-row" key={kind}>
+						<span className="sound-label">{t(`sound.${kind}`)}</span>
+						<select
+							aria-label={t(`sound.${kind}`)}
+							value={settings.events?.[kind] ?? "follow"}
+							disabled={blocked || !settings.enabled}
+							onChange={(e) => {
+								const next = { ...settings, events: { ...settings.events, [kind]: e.target.value as NotifyEventMode } };
+								setSettings(next);
+								saveNotifySettings(next);
+							}}
+						>
+							<option value="follow">{t("notifyEventFollow")}</option>
+							<option value="on">{t("notifyEventOn")}</option>
+							<option value="off">{t("notifyEventOff")}</option>
+						</select>
+					</label>
+				))}
+			</details>
 
 			{block === "insecure" && <div className="sound-hint">{t("notifyInsecure")}</div>}
 			{block === "unsupported" && <div className="sound-hint">{t("notifyUnsupported")}</div>}

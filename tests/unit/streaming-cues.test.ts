@@ -2,6 +2,71 @@ import { describe, expect, it } from "vitest";
 import { diffStreamingCues, type StreamingCueConversation } from "../../web/src/streaming-cues.js";
 
 describe("diffStreamingCues", () => {
+	it("keeps queued parent continuations in one run and notifies once after draining", () => {
+		let previous = new Map([["parent", true]]);
+		for (const streaming of [false, true, false, true]) {
+			const result = diffStreamingCues(previous, "parent", streaming, [], "parent", true);
+			expect(result.finishedConvs).toEqual([]);
+			expect(result.startCue).toBe(false);
+			previous = result.nextMap;
+		}
+		const done = diffStreamingCues(previous, "parent", false, [], "parent", false);
+		expect(done.finishedConvs.map((c) => c.id)).toEqual(["parent"]);
+		expect(diffStreamingCues(done.nextMap, "parent", false, [], "parent").finishedConvs).toEqual([]);
+	});
+
+	it("waits for queued work in background conversations without blocking other completions", () => {
+		const previous = new Map([
+			["parent", true],
+			["other", true],
+		]);
+		const pending = diffStreamingCues(previous, "other", false, [
+			{ id: "parent", isStreaming: false, completionPending: true },
+			{ id: "other", isStreaming: false },
+		]);
+		expect(pending.finishedConvs.map((c) => c.id)).toEqual(["other"]);
+		const done = diffStreamingCues(pending.nextMap, "other", false, [
+			{ id: "parent", isStreaming: false, completionPending: false },
+			{ id: "other", isStreaming: false },
+		]);
+		expect(done.finishedConvs.map((c) => c.id)).toEqual(["parent"]);
+	});
+
+	it("uses the active snapshot when its conversation list still reports pending work", () => {
+		const done = diffStreamingCues(
+			new Map([["parent", true]]),
+			"parent",
+			false,
+			[{ id: "parent", completionPending: true }],
+			"parent",
+			false,
+		);
+		expect(done.finishedConvs.map((c) => c.id)).toEqual(["parent"]);
+	});
+
+	it("does not play a start cue when work is queued before streaming begins", () => {
+		const queued = diffStreamingCues(new Map([["parent", false]]), "parent", false, [], "parent", true);
+		expect(queued.startCue).toBe(false);
+		expect(queued.finishedConvs).toEqual([]);
+	});
+	it("preserves subagent identity when regular and subagent turns finish together", () => {
+		const result = diffStreamingCues(
+			new Map([
+				["main", true],
+				["child", true],
+			]),
+			"child",
+			false,
+			[
+				{ id: "main", isStreaming: false },
+				{ id: "child", isStreaming: false, isSubagent: true },
+			],
+		);
+		expect(result.finishedConvs).toEqual([
+			{ id: "main", title: undefined, isActive: false, isSubagent: false },
+			{ id: "child", title: undefined, isActive: true, isSubagent: true },
+		]);
+	});
 	it("首次观察（prevMap === null）不触发任何 cue，仅填充初始状态", () => {
 		const convs: StreamingCueConversation[] = [
 			{ id: "c1", title: "对话1", isStreaming: false },
@@ -59,6 +124,7 @@ describe("diffStreamingCues", () => {
 				id: "c1",
 				title: "对话1",
 				isActive: true,
+				isSubagent: false,
 			},
 		]);
 	});
@@ -101,6 +167,7 @@ describe("diffStreamingCues", () => {
 				id: "c1",
 				title: "后台任务会话",
 				isActive: false, // 明确标记为非当前活动会话（后台会话）
+				isSubagent: false,
 			},
 		]);
 	});

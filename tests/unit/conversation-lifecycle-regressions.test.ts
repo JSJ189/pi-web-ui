@@ -186,6 +186,7 @@ describe("explicit prompt target", () => {
 		cs.consumeCancelledInFlightQueue = vi.fn().mockReturnValue(false);
 		cs.withPluginSource = (_id: string, run: () => unknown) => run();
 		cs.emitNotice = vi.fn();
+		cs.emitConversations = vi.fn();
 		await cs.prompt("belongs to A", undefined, false, a);
 		expect(cs.emit.mock.calls.filter(([m]: any[]) => m.level === "error")).toEqual([]);
 		expect(a.session.prompt).toHaveBeenCalledExactlyOnceWith("belongs to A");

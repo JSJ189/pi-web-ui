@@ -1,0 +1,84 @@
+import type { ClientMessage, UiPendingQuestion, UiQueuedQuestion } from "./types";
+
+export type QuestionQueueMode = "queue" | "all" | "manual";
+
+export function questionNavigation(question: QueueQuestion): ClientMessage | undefined {
+	if (question.owner) return { type: "navigate_question", id: question.id };
+	const id = question.conversationId ?? question.rootConversationId;
+	return id ? { type: "switch_conversation", id } : undefined;
+}
+
+/** Legacy questionnaires have no creation time; omit their elapsed label. */
+export function questionWaitTime(createdAt: number, now: number): string | undefined {
+	if (!Number.isFinite(createdAt) || createdAt <= 0) return undefined;
+	const seconds = Math.max(0, Math.floor((now - createdAt) / 1000));
+	const minutes = Math.floor(seconds / 60);
+	const tail = String(seconds % 60).padStart(2, "0");
+	return minutes < 60
+		? `${minutes}:${tail}`
+		: `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}:${tail}`;
+}
+export type QueueQuestion = UiPendingQuestion & {
+	owner?: string;
+	rootConversationId?: string;
+	createdAt: number;
+	audience?: "user" | "parent";
+};
+
+type RemoteQuestion = UiPendingQuestion & { owner: string; convId: string };
+
+/** null means this connection has not received the queue protocol yet. */
+export function resolveQuestionQueue(
+	queue: UiQueuedQuestion[] | null,
+	question: UiPendingQuestion | null,
+	remoteQuestion: RemoteQuestion | null,
+): QueueQuestion[] {
+	// Once available, the entire queue is authoritative, including an empty queue.
+	if (queue !== null) return queue.filter((q) => q.audience === "user");
+	const result: QueueQuestion[] = [];
+	// Older engines without the queue protocol retain both legacy channels.
+	for (const fallback of [
+		question && { ...question, createdAt: 0, audience: "user" as const },
+		remoteQuestion && {
+			...remoteQuestion,
+			conversationId: remoteQuestion.convId,
+			createdAt: 0,
+			audience: "user" as const,
+		},
+	]) {
+		if (!fallback) continue;
+		const matches = (q: QueueQuestion) =>
+			q.id === fallback.id &&
+			("owner" in fallback
+				? q.owner === fallback.owner
+				: !fallback.conversationId || q.conversationId === fallback.conversationId);
+		if (!result.some(matches)) result.push(fallback);
+	}
+	return result;
+}
+
+/** IDs are scoped to their owner; two engines may both issue q1. */
+export function questionQueueKey(question: QueueQuestion): string {
+	return JSON.stringify([question.owner ?? "", question.conversationId ?? "", question.id]);
+}
+
+export function isCurrentQuestion(question: QueueQuestion, activeConversationId?: string | null): boolean {
+	return (
+		!!activeConversationId &&
+		(question.conversationId === activeConversationId || question.rootConversationId === activeConversationId)
+	);
+}
+
+export function automaticQuestion(
+	questions: QueueQuestion[],
+	activeConversationId: string | null | undefined,
+	mode: QuestionQueueMode,
+	deferred: ReadonlySet<string>,
+): QueueQuestion | undefined {
+	if (mode === "manual") return undefined;
+	return questions.find(
+		(q) =>
+			!deferred.has(questionQueueKey(q)) &&
+			(mode === "all" || q.conversationId === activeConversationId || !q.conversationId),
+	);
+}

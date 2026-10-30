@@ -38,7 +38,7 @@ describe("native device workspace", () => {
 		);
 		const page = await mount();
 		expect(page.querySelector(".dc-form")).toBeNull();
-		expect(page.querySelector(".dc-device-summary")?.textContent).toContain("Windows");
+		expect(page.querySelector(".dc-onboarding")?.textContent).toContain("连接已有中心");
 		const settings = page.querySelectorAll<HTMLButtonElement>(".dc-nav-item")[2];
 		await act(async () => settings.click());
 		expect(page.querySelector(".dc-form")).not.toBeNull();
@@ -104,6 +104,38 @@ describe("native device workspace", () => {
 			expect(sections()).toHaveLength(1);
 			expect(page.querySelectorAll(".dc-bots")).toHaveLength(0);
 		}
+	});
+	it("opens the connected Hub from settings and authorizes remote desktop access", async () => {
+		const replace = vi.fn();
+		const tab = { opener: window, location: { replace }, close: vi.fn() };
+		vi.spyOn(window, "open").mockReturnValue(tab as any);
+		cleanups.push(() => vi.restoreAllMocks());
+		const fetch = vi.fn(async (url) => {
+			const path = String(url).split("?")[0];
+			if (path.endsWith("/devices/mac/open"))
+				return response({ url: "https://hub.example.com/device/mac/__open?ticket=access" });
+			if (path.endsWith("/devices")) return response({ devices: [{ id: "mac", name: "Mac", online: true }] });
+			if (path.endsWith("/local-bots")) return response({ bots: [] });
+			return response({ name: "Mac", deviceId: "mac", hubUrl: "https://hub.example.com", connected: true });
+		});
+		vi.stubGlobal("fetch", fetch);
+		const page = await mount();
+		await act(async () => page.querySelectorAll<HTMLButtonElement>(".dc-nav-item")[2].click());
+		const hub = page.querySelector<HTMLAnchorElement>(".dc-header a")!;
+		expect(hub.href).toBe("https://hub.example.com/");
+		expect(hub.target).toBe("_blank");
+		const desktop = Array.from(page.querySelectorAll<HTMLAnchorElement>(".dd-device a")).find((a) =>
+			a.textContent?.includes("远程桌面"),
+		)!;
+		expect(desktop.href).toBe("https://hub.example.com/device/mac/desktop");
+		await act(async () => desktop.click());
+		expect(fetch).toHaveBeenCalledWith(
+			expect.stringContaining("/api/device-center/devices/mac/open"),
+			expect.objectContaining({ method: "POST" }),
+		);
+		expect(tab.opener).toBeNull();
+		expect(replace).toHaveBeenCalledWith("https://hub.example.com/device/mac/__open?ticket=access&next=%2Fdesktop");
+		expect(tab.close).not.toHaveBeenCalled();
 	});
 	it("aborts an in-flight request on unmount", async () => {
 		let signal: AbortSignal | undefined;

@@ -2,6 +2,7 @@ interface StreamingCueFinished {
 	id: string;
 	title?: string;
 	isActive: boolean;
+	isSubagent: boolean;
 }
 
 interface StreamingCuesDiff {
@@ -9,7 +10,7 @@ interface StreamingCuesDiff {
 	startCue: boolean;
 	/** 刚刚结束运行的会话列表（流式状态由 true 跃迁为 false） */
 	finishedConvs: StreamingCueFinished[];
-	/** 更新后的各会话流式状态映射，供下一次比对 */
+	/** 更新后的各会话工作状态（输出或待续跑），供下一次比对 */
 	nextMap: Map<string, boolean>;
 }
 
@@ -17,6 +18,9 @@ export interface StreamingCueConversation {
 	id: string;
 	title?: string;
 	isStreaming?: boolean;
+	/** Queued work or an automatic continuation still needs to finish. */
+	completionPending?: boolean;
+	isSubagent?: boolean;
 }
 
 /**
@@ -26,6 +30,7 @@ export interface StreamingCueConversation {
  * 1. 按会话 ID 独立跟踪每个会话的 streaming 状态，绝不在会话切换时跨会话做状态比对。
  *    切换会话（无论从 running 切到 idle，还是从 idle 切到 running）绝对不触发任何提示音与通知。
  * 2. 活动会话的流式状态以 activeStreaming（来自 chat.state，毫秒级实时）为权威；后台会话以 conversations 列表为准。
+ *    排队消息和自动续跑也算工作中，只有输出与待续跑均结束才通知，避免每轮内部交接都报完成。
  * 3. 只有当前活动会话从明确的非运行态变为运行态时，才触发 startCue；切换会话后的第一拍
  *    （prevActiveId 已知且 ≠ activeId）一律不触发——后台会话刚开流时 conversations 列表可能
  *    还没更新，prevMap 里它仍是 false，此刻切入会把「切入正在运行的会话」误判成本会话开始。
@@ -39,13 +44,14 @@ export function diffStreamingCues(
 	activeStreaming: boolean,
 	conversations: readonly StreamingCueConversation[],
 	prevActiveId?: string | null,
+	activeCompletionPending = false,
 ): StreamingCuesDiff {
 	const currentMap = new Map<string, boolean>();
 	for (const c of conversations) {
-		currentMap.set(c.id, !!c.isStreaming);
+		currentMap.set(c.id, !!c.isStreaming || !!c.completionPending);
 	}
 	if (activeId) {
-		currentMap.set(activeId, activeStreaming);
+		currentMap.set(activeId, activeStreaming || activeCompletionPending);
 	}
 
 	// 首次观察：不发任何提示
@@ -63,7 +69,7 @@ export function diffStreamingCues(
 	let startCue = false;
 	if (activeId && (prevActiveId === undefined || prevActiveId === activeId)) {
 		const prevActive = prevMap.get(activeId);
-		const nowActive = currentMap.get(activeId) ?? false;
+		const nowActive = activeStreaming;
 		if (prevActive === false && nowActive === true) {
 			startCue = true;
 		}
@@ -80,6 +86,7 @@ export function diffStreamingCues(
 				id,
 				title: c?.title,
 				isActive: id === activeId,
+				isSubagent: !!c?.isSubagent,
 			});
 		}
 	}

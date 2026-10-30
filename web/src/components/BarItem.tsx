@@ -142,6 +142,15 @@ export function BarItem({
 	const state = chat.state;
 	const stats = state?.stats;
 	const isStreaming = state?.isStreaming ?? false;
+	const timing = state?.turnTiming;
+	const timingRunning = !!timing && timing.finishedAt === undefined;
+	const [clockNow, setClockNow] = useState(Date.now);
+	useEffect(() => {
+		if (entry.id !== "host:working" || !timingRunning) return;
+		setClockNow(Date.now());
+		const timer = window.setInterval(() => setClockNow(Date.now()), 1000);
+		return () => window.clearInterval(timer);
+	}, [entry.id, timingRunning, timing?.startedAt]);
 	const costDisplay = useFormattedCost(stats?.cost ?? 0);
 
 	const samplesRef = useRef<RateSample[]>([]);
@@ -547,24 +556,34 @@ export function BarItem({
 
 	// 6. 特殊条目：运行状态
 	if (id === "host:working") {
-		if (!isStreaming) return null;
+		if (!isStreaming && !timing) return null;
+		const working = isStreaming || timingRunning;
+		const label = working ? t("working") : t("done");
+		const seconds = timing ? Math.max(0, Math.floor(((timing.finishedAt ?? clockNow) - timing.startedAt) / 1000)) : 0;
+		const duration =
+			seconds < 3600
+				? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`
+				: `${Math.floor(seconds / 3600)}:${String(Math.floor(seconds / 60) % 60).padStart(2, "0")}:${String(seconds % 60).padStart(2, "0")}`;
 		const queueTotal = (state?.queue?.steering?.length ?? 0) + (state?.queue?.followUp?.length ?? 0);
 		return (
 			<span
-				className="bar-item status-item working bar-item-working"
-				title={t("working")}
-				data-tip={t("working")}
+				className={`bar-item status-item bar-item-working${working ? " working" : ""}`}
+				title={`${label}${timing ? ` · ${duration}` : ""}`}
+				data-tip={`${label}${timing ? ` · ${duration}` : ""}`}
 				onContextMenu={handleContextMenu}
 				data-bar-item={id}
 			>
-				<span className="working-spin" />
+				{working && <span className="working-spin" />}
 				<span className="bar-item-text">
-					{named(t("working"))}
+					{named(label)}
 					{queueTotal > 0 && ` ⏳ ${queueTotal}`}
 				</span>
-				<span className="status-rate bar-item-rate" title={t("rateTip")}>
-					{rate > 0 ? `${Math.round(rate)}${t("tps")}` : "…"}
-				</span>
+				{timing && <span className="bar-item-duration">{duration}</span>}
+				{working && rate > 0 && (
+					<span className="status-rate bar-item-rate" title={t("rateTip")}>
+						{`${Math.round(rate)}${t("tps")}`}
+					</span>
+				)}
 			</span>
 		);
 	}

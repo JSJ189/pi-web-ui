@@ -15,6 +15,7 @@ import { withToken } from "../auth-token";
 import { useT } from "../i18n";
 import { DeviceGroups } from "./DeviceGroups";
 import { LocalBots } from "./LocalBots";
+import { DeviceCenterSetup } from "./DeviceCenterSetup";
 import { DeviceDirectory } from "./DeviceDirectory";
 import { useDeviceGroupNavigation } from "../device-group-navigation";
 
@@ -291,10 +292,13 @@ export function DeviceCenter({
 					<h1>{t("deviceHubTitle")}</h1>
 					<p>{t("deviceHubSubtitle")}</p>
 				</div>
-				<span className={`dc-status ${bound ? (status?.connected ? "is-online" : "is-offline") : "is-unpaired"}`}>
-					<span className="dc-status-dot" />
-					{t(bound ? (status?.connected ? "deviceHubOnline" : "deviceHubOffline") : "deviceHubUnpaired")}
-				</span>
+				<div className="dc-actions">
+					{bound && hubLink}
+					<span className={`dc-status ${bound ? (status?.connected ? "is-online" : "is-offline") : "is-unpaired"}`}>
+						<span className="dc-status-dot" />
+						{t(bound ? (status?.connected ? "deviceHubOnline" : "deviceHubOffline") : "deviceHubUnpaired")}
+					</span>
+				</div>
 			</header>
 			<div className="dc-layout">
 				<nav className="dc-sidebar" aria-label={t("deviceHubTitle")}>
@@ -353,24 +357,27 @@ export function DeviceCenter({
 							{notice}
 						</div>
 					)}
-					{status && !localOnly && !bound && view === "overview" && (
+					{!bound && (status || localOnly) && view === "overview" && (
+						<DeviceCenterSetup
+							initialHubUrl={hubUrl}
+							onConnect={(url) => {
+								if (localOnly) {
+									setNotice(t("deviceHubLocalOnly"));
+									return;
+								}
+								dirty.current = true;
+								setHubUrl(url);
+								setView("settings");
+							}}
+						/>
+					)}
+					{bound && view === "overview" && (
 						<section className="dc-card">
-							<div className="dc-device-summary">
-								<span className="dc-device-icon">
-									<FiMonitor aria-hidden />
-								</span>
-								<div>
-									<h2>{status.name}</h2>
-									<p>{t("deviceHubUnpaired")}</p>
-								</div>
-							</div>
-							<p className="dc-permission-state">{t("deviceHubPairHint")}</p>
-							<div className="dc-actions">
-								<button type="button" className="dc-button is-primary" onClick={() => setView("settings")}>
-									<FiLink aria-hidden />
-									{t("deviceHubPairTitle")}
-								</button>
-							</div>
+							<h3>{t("deviceSetupNext")}</h3>
+							<p>{t("deviceSetupNextHint")}</p>
+							<button className="dc-button is-primary" onClick={() => setView("groups")}>
+								{t("deviceSetupManage")}
+							</button>
 						</section>
 					)}
 					{status && !localOnly && !bound && view === "settings" && (
@@ -512,7 +519,6 @@ export function DeviceCenter({
 											<dd>{status.hubUrl}</dd>
 										</div>
 									</dl>
-									<div className="dc-actions">{hubLink}</div>
 								</section>
 							)}
 							{view === "settings" && (

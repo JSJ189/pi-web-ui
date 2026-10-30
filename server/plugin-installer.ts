@@ -350,7 +350,8 @@ export class PluginInstaller {
 					),
 				);
 			}
-			finish(code === 0, code === 0 ? undefined : `exit code ${code}`);
+			const diagnostic = (tail + pending).trim().slice(-MAX_LINE_CHARS);
+			finish(code === 0, code === 0 ? undefined : `exit code ${code}${diagnostic ? `: ${diagnostic}` : ""}`);
 		});
 
 		emit({ type: "plugin_job", jobId, action, pluginId, phase: "start" });

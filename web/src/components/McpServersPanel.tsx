@@ -1,4 +1,5 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import { randomUuid } from "../uuid";
 import {
 	FiAlertTriangle,
 	FiCheck,
@@ -32,6 +33,7 @@ export type McpMarketCategoryFilter = "all" | "cn" | "marketplace" | "community"
 export interface McpServersPanelProps {
 	settings: UiSettingsState;
 	chat?: {
+		mcpOAuthResult?: Extract<import("../types").ServerMessage, { type: "mcp_oauth_result" }> | null;
 		mcpMarketResult?: {
 			ok: boolean;
 			servers?: unknown[];
@@ -103,8 +105,42 @@ const MCP_PRESETS: McpPresetTemplate[] = [
 	},
 ];
 
-export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps) {
+export function McpServersPanel({ settings, chat }: McpServersPanelProps) {
 	const t = useT();
+	const [login, setLogin] = useState<{ reqId: string; name: string } | null>(null);
+	const [redirectUrl, setRedirectUrl] = useState("");
+	const [finishing, setFinishing] = useState(false);
+	const result = chat?.mcpOAuthResult?.reqId === login?.reqId ? chat?.mcpOAuthResult : null;
+	useEffect(() => {
+		if (!login) return;
+		return () => {
+			appSend({ type: "mcp_oauth_cancel", reqId: login.reqId });
+		};
+	}, [login]);
+	useEffect(() => {
+		if (!login || !result?.id || result.status !== "pending") return;
+		const id = result.id;
+		const timer = window.setInterval(() => appSend({ type: "mcp_oauth_status", reqId: login.reqId, id }), 1500);
+		return () => window.clearInterval(timer);
+	}, [login, result?.id, result?.status]);
+	useEffect(() => {
+		if (result?.status === "complete" || result?.status === "error" || result?.error) {
+			setFinishing(false);
+			setRedirectUrl("");
+		}
+	}, [result]);
+	const closeLogin = () => {
+		setLogin(null);
+		setRedirectUrl("");
+		setFinishing(false);
+	};
+	const startLogin = (server: UiMcpServer) => {
+		const reqId = randomUuid();
+		setLogin({ reqId, name: server.name });
+		setRedirectUrl("");
+		setFinishing(false);
+		appSend({ type: "mcp_oauth_start", reqId, name: server.name, scope: server.scope });
+	};
 	const { locale } = useI18n();
 	const [viewMode, setViewMode] = useState<"configured" | "market">("configured");
 	const [scopeFilter, setScopeFilter] = useState<"all" | McpScope>("all");
@@ -403,6 +439,16 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 												</span>
 											</div>
 											<div className="mcp-card-actions">
+												{s.url && (
+													<button
+														type="button"
+														className="mcp-quick-btn"
+														disabled={!!login}
+														onClick={() => startLogin(s)}
+													>
+														{t("mcpOAuthLogin")}
+													</button>
+												)}
 												<button
 													type="button"
 													role="switch"
@@ -658,6 +704,87 @@ export function McpServersPanel({ settings, chat: _chat }: McpServersPanelProps)
 			{/* ========================================================= */}
 			{/* 3. 删除确认弹窗                                           */}
 			{/* ========================================================= */}
+			{login && (
+				<div className="modal-backdrop sub-modal" onClick={closeLogin}>
+					<div
+						className="modal mcp-edit-modal"
+						role="dialog"
+						aria-modal="true"
+						aria-labelledby="mcp-oauth-title"
+						onClick={(e) => e.stopPropagation()}
+						onKeyDown={(e) => {
+							if (e.key === "Escape") {
+								e.stopPropagation();
+								closeLogin();
+							}
+						}}
+					>
+						<div className="modal-head">
+							<h3 id="mcp-oauth-title">
+								{t("mcpOAuthLogin")} · {login.name}
+							</h3>
+						</div>
+						<div className="modal-body">
+							{!result && <p role="status">{t("mcpOAuthStarting")}</p>}
+							{result?.status === "complete" && <p role="status">{t("mcpOAuthComplete")}</p>}
+							{result?.status === "error" && <p role="alert">{t("mcpOAuthError")}</p>}
+							{result?.status === "pending" && (
+								<>
+									<p>{t("mcpOAuthInstructions")}</p>
+									{result.authorizationUrl && (
+										<a
+											className="mcp-quick-btn"
+											href={result.authorizationUrl}
+											target="_blank"
+											rel="noopener noreferrer"
+										>
+											{t("mcpOAuthOpen")} <FiExternalLink />
+										</a>
+									)}
+									<p role="status">{finishing ? t("mcpOAuthFinishing") : t("mcpOAuthWaiting")}</p>
+									{result.error && <p role="alert">{t("mcpOAuthInvalidRedirect")}</p>}
+									<label htmlFor="mcp-oauth-redirect">{t("mcpOAuthRedirect")}</label>
+									<input
+										id="mcp-oauth-redirect"
+										className="set-input"
+										type="url"
+										autoComplete="off"
+										spellCheck={false}
+										value={redirectUrl}
+										disabled={finishing}
+										onChange={(e) => setRedirectUrl(e.target.value)}
+									/>
+								</>
+							)}
+						</div>
+						<div className="modal-actions">
+							<button type="button" className="set-cancel-btn" onClick={closeLogin}>
+								{result?.status === "complete" || result?.status === "error" ? t("close") : t("cancel")}
+							</button>
+							{result?.status === "pending" && (
+								<button
+									type="button"
+									className="btn primary"
+									disabled={finishing || !redirectUrl.trim() || !result.id}
+									onClick={() => {
+										if (!result.id) return;
+										setFinishing(true);
+										appSend({
+											type: "mcp_oauth_finish",
+											reqId: login.reqId,
+											id: result.id,
+											redirectUrl: redirectUrl.trim(),
+										});
+										setRedirectUrl("");
+									}}
+								>
+									{t("mcpOAuthFinish")}
+								</button>
+							)}
+						</div>
+					</div>
+				</div>
+			)}
 			{deleteConfirm && (
 				<div className="modal-backdrop sub-modal" onClick={() => setDeleteConfirm(null)}>
 					<div className="modal confirm-modal" onClick={(e) => e.stopPropagation()}>

@@ -11,18 +11,19 @@
  *    - 支持一键切换过去查看或一键清理。
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import type { WorktreeInfo } from "../types";
 import { useT } from "../i18n";
 import { FiX } from "react-icons/fi";
 
 export interface WorktreeBannerProps {
 	worktree: WorktreeInfo;
+	onRefresh: () => void;
 	onSwitch: (path: string) => void;
 	onRemove: (path: string, force?: boolean) => void;
 }
 
-export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onSwitch, onRemove }) => {
+export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onRefresh, onSwitch, onRemove }) => {
 	const t = useT();
 	const [expanded, setExpanded] = useState(false);
 
@@ -30,6 +31,34 @@ export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onSwit
 		const parts = p.replace(/\\/g, "/").split("/").filter(Boolean);
 		return parts[parts.length - 1] || p;
 	};
+
+	const linked = worktree.linkedWorktrees || [];
+	const linkedSig = JSON.stringify(linked.map((w) => w.path).sort());
+	const dismissKey = `pi-worktree-dismiss:${worktree.mainPath}`;
+	const [dismissedSig, setDismissedSig] = useState<string | null>(null);
+	useEffect(() => {
+		try {
+			setDismissedSig(localStorage.getItem(dismissKey));
+		} catch {
+			setDismissedSig(null);
+		}
+	}, [dismissKey]);
+	const refreshRef = useRef(onRefresh);
+	refreshRef.current = onRefresh;
+	useEffect(() => {
+		const refresh = () => {
+			if (document.visibilityState === "visible") refreshRef.current();
+		};
+		refresh();
+		const timer = window.setInterval(refresh, 30_000);
+		window.addEventListener("focus", refresh);
+		document.addEventListener("visibilitychange", refresh);
+		return () => {
+			window.clearInterval(timer);
+			window.removeEventListener("focus", refresh);
+			document.removeEventListener("visibilitychange", refresh);
+		};
+	}, [worktree.mainPath]);
 
 	// 状态一：当前工作区就是子工作树
 	if (worktree.isLinkedWorktree) {
@@ -74,38 +103,15 @@ export const WorktreeBanner: React.FC<WorktreeBannerProps> = ({ worktree, onSwit
 		);
 	}
 
-	// 状态二：当前在主仓库，名下有子工作树
-	const linked = worktree.linkedWorktrees || [];
-	const linkedSig = linked
-		.map((w) => `${w.path}:${w.branch ?? ""}:${w.isDirty}`)
-		.sort()
-		.join(";");
-	const dismissKey = `pi-worktree-dismiss:${worktree.mainPath}`;
-
-	const [isDismissed, setIsDismissed] = useState(() => {
-		try {
-			return sessionStorage.getItem(dismissKey) === linkedSig;
-		} catch {
-			return false;
-		}
-	});
-
-	useEffect(() => {
-		try {
-			setIsDismissed(sessionStorage.getItem(dismissKey) === linkedSig);
-		} catch {
-			// ignore
-		}
-	}, [dismissKey, linkedSig]);
-
-	if (linked.length === 0 || isDismissed) {
+	// 状态二：忽略选择仅随工作树增删失效，文件修改不再触发横幅。
+	if (linked.length === 0 || dismissedSig === linkedSig) {
 		return null;
 	}
 
 	const handleDismiss = () => {
-		setIsDismissed(true);
+		setDismissedSig(linkedSig);
 		try {
-			sessionStorage.setItem(dismissKey, linkedSig);
+			localStorage.setItem(dismissKey, linkedSig);
 		} catch {
 			// ignore
 		}

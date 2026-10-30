@@ -335,7 +335,8 @@ describe("工具调用检查器视口滚动能力（Tool Inspector Modal Viewpor
 			const body = bodyOf(sel);
 			expect(body, `${sel} 未设置滚动规则`).not.toBe("");
 			expect(/overflow(-y)?\s*:\s*auto/.test(body), `${sel} 缺 overflow: auto`).toBe(true);
-			expect(/height\s*:\s*100%/.test(body), `${sel} 缺 height: 100%`).toBe(true);
+			expect(/height\s*:\s*auto/.test(body), `${sel} 应随内容自然增高`).toBe(true);
+			expect(/min-height\s*:\s*0/.test(body), `${sel} 必须允许收缩以滚动长内容`).toBe(true);
 		}
 	});
 });

@@ -9,6 +9,11 @@ import { LanguageProvider } from "../../web/src/i18n.js";
 import { resetAppGlobals, setAppGlobals } from "../../web/src/app-globals.js";
 import { getContextMenu, closeContextMenu } from "../../web/src/context-menu-state.js";
 
+// Layout assertions use a bound group section; binding/loading has its own tests.
+vi.mock("../../web/src/components/DeviceGroupSection.js", () => ({
+	DeviceGroupSection: () => createElement("div", { className: "lp-section dg-side-section" }),
+}));
+
 let root: Root | null = null;
 
 /** 内存 localStorage：某些 jsdom/CI 环境的存储不可写，桩掉以保证语言确定为中文。 */
@@ -414,7 +419,7 @@ describe("LeftPanel P2：分区顺序 / 显隐 / 分隔条 / 行内槽位拆分"
 	it("隐藏项目分区时群组置顶，分隔条按剩余展开分区重新配对", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
 		const all = mountLeftPanel({ projects: oneProject, conversations: runningConv });
-		expect(all.container.querySelectorAll(".lp-sash")).toHaveLength(2);
+		expect(all.container.querySelectorAll(".lp-sash")).toHaveLength(3);
 		all.container.remove();
 		act(() => root!.unmount());
 		root = null;
@@ -429,14 +434,14 @@ describe("LeftPanel P2：分区顺序 / 显隐 / 分隔条 / 行内槽位拆分"
 			],
 		});
 		expect(sectionOrder(container)).toEqual(["groups", "convs", "sessions"]);
-		expect(container.querySelectorAll(".lp-sash")).toHaveLength(1);
+		expect(container.querySelectorAll(".lp-sash")).toHaveLength(2);
 	});
 
-	it("默认（无 uiSections）显示项目、群组、运行与历史分区，群组不增加分隔条", () => {
+	it("默认（无 uiSections）显示项目、群组、运行与历史分区，群组参与分隔", () => {
 		setAppGlobals({ cwd: "/test", ready: true, status: "open", workspaceRoots: [] });
 		const { container } = mountLeftPanel({ projects: oneProject, conversations: runningConv });
 		expect(sectionOrder(container)).toEqual(["projects", "groups", "convs", "sessions"]);
-		expect(container.querySelectorAll(".lp-sash")).toHaveLength(2);
+		expect(container.querySelectorAll(".lp-sash")).toHaveLength(3);
 	});
 
 	it("运行行与历史行各用自己的行内槽位；leftpanel.sessions 两边都有", () => {

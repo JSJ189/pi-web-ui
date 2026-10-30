@@ -28,14 +28,17 @@ import { spawn, spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
 import { get as httpGet } from "node:http";
 import { createInterface } from "node:readline/promises";
-import { frpCmd } from "./frp-manager.mjs";
-import {
-	ensureBackup as ensurePluginBackup,
-	restoreBackup as restorePluginBackup,
-	checkPluginUpdates,
-	resolveRemoteSha,
-	compareVersions,
-} from "../dist/server/plugin-updater.js";
+// Dispatch Hub before loading optional plugin/FRP dependencies or the server build.
+if (process.argv[2] === "hub") {
+	try {
+		const { runHubCliEntry } = await import("./device-hub-cli.mjs");
+		await runHubCliEntry(process.argv.slice(3));
+	} catch (error) {
+		console.error(`[device-hub] ${error.message}`);
+		process.exitCode = 1;
+	}
+}
+
 import {
 	chmodSync,
 	copyFileSync,
@@ -54,6 +57,16 @@ import { homedir, networkInterfaces, tmpdir, userInfo } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { fileURLToPath } from "node:url";
+
+const isHubCommand = process.argv[2] === "hub";
+const { frpCmd } = isHubCommand ? {} : await import("./frp-manager.mjs");
+const {
+	ensureBackup: ensurePluginBackup,
+	restoreBackup: restorePluginBackup,
+	checkPluginUpdates,
+	resolveRemoteSha,
+	compareVersions,
+} = isHubCommand ? {} : await import("../dist/server/plugin-updater.js");
 
 const BIN_DIR = dirname(fileURLToPath(import.meta.url));
 /** <pkg>/dist/server/index.js — the actual server entry. */
@@ -3728,7 +3741,7 @@ async function pluginInstallCmd(argv) {
 	}
 }
 
-function pluginUninstallCmd(argv) {
+async function pluginUninstallCmd(argv) {
 	const { opts, positionals } = parseFlags(argv);
 	if (opts.help || positionals.length !== 1) {
 		console.log(PLUGIN_HELP);
@@ -3744,7 +3757,20 @@ function pluginUninstallCmd(argv) {
 				? `未安装插件 "${id}"（pi-web-ui plugins 查看已装列表）`
 				: `Plugin not installed: "${id}" (pi-web-ui plugins to see installed list)`,
 		);
-	rmSync(target, { recursive: true, force: true });
+	const { removePlugin } = await import("../dist/server/plugin-removal.js");
+	let deferred;
+	try {
+		({ deferred } = removePlugin(pluginDataDir(opts), id));
+	} catch (err) {
+		fail(`${err?.message ?? err}`);
+	}
+	if (deferred) {
+		console.log(
+			ZH
+				? "部分文件仍被进程占用，将在服务重启后清理。"
+				: "Some files are still in use and will be cleaned up after the service restarts.",
+		);
+	}
 	console.log(
 		ZH
 			? `✔ 已卸载插件 ${id} —— 运行中的服务刷新浏览器后消失。`
@@ -3995,13 +4021,8 @@ async function main() {
 		return;
 	}
 	if (first === "hub") {
-		if (argv.includes("--help") || argv.includes("-h")) {
-			console.log(
-				"pi-web-ui hub — standalone device and collaboration hub\nSet PI_DEVICE_HUB_PUBLIC_URL (HTTP/IP or HTTPS), PI_DEVICE_HUB_HOST, PI_DEVICE_HUB_DATA_DIR, PI_DEVICE_HUB_PORT (8790).\nPI_DEVICE_HUB_DEVICE_DOMAIN is optional; needed for remote device web/desktop access.\nSet PI_DEVICE_HUB_ALLOW_REGISTRATION=1 to allow account registration. See docs/device-center.md.",
-			);
-			return;
-		}
-		await import("./pi-device-hub.mjs");
+		const { runHubCli } = await import("./device-hub-cli.mjs");
+		await runHubCli(argv.slice(1));
 		return;
 	}
 	if (first === "server") {
@@ -4017,7 +4038,7 @@ async function main() {
 		return;
 	}
 	if (first === "uninstall") {
-		pluginUninstallCmd(argv.slice(1));
+		await pluginUninstallCmd(argv.slice(1));
 		return;
 	}
 	if (first === "plugins" || first === "plugin") {
@@ -4045,7 +4066,8 @@ async function main() {
 	await startForeground(opts);
 }
 
-main().catch((err) => {
-	console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
-	process.exit(1);
-});
+if (!isHubCommand)
+	main().catch((err) => {
+		console.error(`✖ ${err instanceof Error ? err.message : String(err)}`);
+		process.exit(1);
+	});

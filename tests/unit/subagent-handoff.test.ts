@@ -126,6 +126,65 @@ describe("subagent_handoff (Peer-to-Peer Hand-off)", () => {
 		expect(result.details.toRunId).toBe("sa-dev-2222");
 	});
 
+	it("rejects another project's source identity before looking up or delivering to the target", async () => {
+		const host = makeMockHost();
+		const tool = makeSubagentTools(host, () => "en", "local-executor")[0];
+		await expect(
+			tool.execute(
+				"spoof",
+				{
+					action: "handoff",
+					fromRunId: "other-project-owner",
+					toRunId: "peer",
+					payload: "impersonated payload",
+				},
+				undefined,
+				undefined,
+				{} as any,
+			),
+		).rejects.toThrow("source must match");
+		expect(host.getSubagent).not.toHaveBeenCalled();
+		expect(host.handoffSubagent).not.toHaveBeenCalled();
+	});
+
+	it("rejects handoff without a server-resolved caller identity", async () => {
+		const host = makeMockHost();
+		const tool = makeSubagentTools(host, () => "en")[0];
+		await expect(
+			tool.execute(
+				"unbound",
+				{
+					action: "handoff",
+					fromRunId: "claimed-owner",
+					toRunId: "peer",
+					payload: "payload",
+				},
+				undefined,
+				undefined,
+				{} as any,
+			),
+		).rejects.toThrow("verified conversation identity");
+		expect(host.handoffSubagent).not.toHaveBeenCalled();
+	});
+
+	it("owner wrapper uses dynamic identity and rejects stale or foreign sources", async () => {
+		const host = makeMockHost();
+		let owner = "initial-owner";
+		const wrapped = withSubagentOwner(host, owner, () => owner);
+		owner = "remapped-owner";
+		await expect(wrapped.handoffSubagent("initial-owner", "peer", "payload")).rejects.toThrow("source must match");
+		await expect(wrapped.handoffSubagent("other-project-owner", "peer", "payload")).rejects.toThrow(
+			"source must match",
+		);
+		expect(host.handoffSubagent).not.toHaveBeenCalled();
+		await wrapped.handoffSubagent("", "peer", "default source");
+		await wrapped.handoffSubagent(owner, "peer", "explicit source");
+		expect(vi.mocked(host.handoffSubagent).mock.calls).toEqual([
+			[owner, "peer", "default source"],
+			[owner, "peer", "explicit source"],
+		]);
+	});
+
 	it("withSubagentOwner 正确传递 ownerId 作为默认来源", async () => {
 		const host = makeMockHost();
 		const wrapped = withSubagentOwner(host, "conv-owner-root");

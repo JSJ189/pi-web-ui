@@ -481,8 +481,9 @@ export async function createSubagentWorktree(
 export async function finalizeSubagentWorktree(
 	wt: SubagentWorktreeContext,
 	lang?: () => ServerLang,
+	canCleanup: () => boolean = () => true,
 ): Promise<SubagentWorktreeContext> {
-	if (wt.finalized) return wt;
+	if (wt.finalized || !canCleanup()) return wt;
 
 	const { existsSync } = await import("node:fs");
 	if (!existsSync(wt.worktreePath)) {
@@ -508,6 +509,7 @@ export async function finalizeSubagentWorktree(
 		if (!hasChanges) {
 			// 没有改动 -> 自动清理工作树与临时分支
 			await withRepoLock(wt.mainRepoPath, async () => {
+				if (!canCleanup()) throw new Error("Worktree acquired an active execution during finalization");
 				// 先移除建立的软链接/Junction，防止 Windows 下锁死目录句柄
 				for (const depDir of ["node_modules", ".venv"]) {
 					const p = resolve(wt.worktreePath, depDir);
@@ -521,6 +523,7 @@ export async function finalizeSubagentWorktree(
 				// Recheck under the repository lock and let Git reject concurrent changes.
 				const head = (await runGit(wt.worktreePath, ["rev-parse", "HEAD"])).trim();
 				if (head !== wt.baseCommit) throw new Error("Worktree HEAD changed during cleanup");
+				if (!canCleanup()) throw new Error("Worktree acquired an active execution during finalization");
 				await removeWorktree(wt.mainRepoPath, wt.worktreePath, false, lang);
 				try {
 					// Compare-and-delete: a concurrent commit must preserve its branch.

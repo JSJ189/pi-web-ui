@@ -8,9 +8,14 @@
  * （screenX/screenY 飞到屏幕外的「最小化坐标」、outerWidth/Height 塌成标题栏）。
  * 之前「只看焦点」和「焦点 + 可见」两版都在最小化场景下把通知全吞了。
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { loadSoundSettings } from "../../web/src/sounds.js";
 import {
 	idleSinceLastActivityMs,
+	isNotifyEventEnabled,
+	loadNotifySettings,
+	notify,
+	NOTIFY_EVENTS,
 	isCollapsedWindow,
 	isWindowsPlatform,
 	markActivity,
@@ -28,6 +33,72 @@ const presence = (patch: Partial<PresenceSignals> = {}): PresenceSignals => ({
 	idleMs: 0,
 	windows: false,
 	...patch,
+});
+
+describe("notification event preferences", () => {
+	it("existing settings follow every sound event independently of sound master and volume", () => {
+		const sound = { ...loadSoundSettings(), enabled: false, volume: 0 };
+		for (const kind of NOTIFY_EVENTS) {
+			expect(isNotifyEventEnabled(kind, { enabled: true }, { ...sound, [kind]: false })).toBe(false);
+			expect(isNotifyEventEnabled(kind, { enabled: true }, { ...sound, [kind]: true })).toBe(true);
+		}
+	});
+
+	it("per-event overrides work in both directions and never bypass desktop master", () => {
+		const sound = loadSoundSettings();
+		for (const kind of NOTIFY_EVENTS) {
+			expect(isNotifyEventEnabled(kind, { enabled: true, events: { [kind]: "on" } }, { ...sound, [kind]: false })).toBe(
+				true,
+			);
+			expect(isNotifyEventEnabled(kind, { enabled: true, events: { [kind]: "off" } }, { ...sound, [kind]: true })).toBe(
+				false,
+			);
+			expect(isNotifyEventEnabled(kind, { enabled: false, events: { [kind]: "on" } }, sound)).toBe(false);
+		}
+	});
+
+	it("drops invalid stored event overrides", () => {
+		vi.stubGlobal("localStorage", {
+			getItem: () => JSON.stringify({ enabled: true, events: { done: "off", subagentDone: "invalid", unknown: "on" } }),
+		});
+		try {
+			expect(loadNotifySettings()).toEqual({ enabled: true, events: { done: "off" } });
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("blocks a disabled subagent event before desktop delivery and permits an explicit override", async () => {
+		let override = false;
+		const delivered = vi.fn();
+		class MockNotification {
+			static permission = "granted";
+			constructor(title: string) {
+				delivered(title);
+			}
+		}
+		vi.stubGlobal("window", { Notification: MockNotification, addEventListener: vi.fn() });
+		vi.stubGlobal("document", { hasFocus: () => false, visibilityState: "hidden", addEventListener: vi.fn() });
+		vi.stubGlobal("navigator", {});
+		vi.stubGlobal("Notification", MockNotification);
+		vi.stubGlobal("localStorage", {
+			getItem: (key: string) =>
+				JSON.stringify(
+					key === "pi-web-notify"
+						? { enabled: true, events: override ? { subagentDone: "on" } : {} }
+						: { subagentDone: false },
+				),
+		});
+		try {
+			await notify("child", "finished", "subagentDone");
+			expect(delivered).not.toHaveBeenCalled();
+			override = true;
+			await notify("child", "finished", "subagentDone");
+			expect(delivered).toHaveBeenCalledWith("child");
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
 });
 
 describe("isCollapsedWindow", () => {

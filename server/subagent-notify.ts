@@ -96,7 +96,11 @@ export function formatSubagentsCompletionNotice(
 			statusLabel = pick(lang, "✅ 正常完成", "✅ Done", "subagents.notify.status.done");
 		}
 
-		const rawOutput = conv.session.getLastAssistantText() ?? "";
+		const manualSummary =
+			!outcome.error && !outcome.canceled && conv.subagentTask?.mode === "manual"
+				? conv.subagentTask.summary?.trim()
+				: undefined;
+		const rawOutput = manualSummary || conv.session.getLastAssistantText() || "";
 		const conclusion = extractSubagentConclusion(rawOutput, lang);
 		const indentedConclusion = conclusion
 			.split("\n")

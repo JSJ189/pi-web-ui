@@ -28,7 +28,14 @@ import type {
 import { useT } from "../i18n";
 import { useAppField, useEngineCapabilities } from "../app-globals";
 import { applySashDrag } from "../panel-sash";
-import { type LpSectionKey, flexSectionKeys, parseLpWeights, planLeftSections, sashPairs } from "../left-sections";
+import {
+	type LpSectionKey,
+	flexSectionKeys,
+	parseLpWeights,
+	planLeftSections,
+	sashPairs,
+	withDeviceGroupSection,
+} from "../left-sections";
 import { buildConversationRows, groupConversations } from "../conv-groups";
 import { ProjectPicker } from "./ProjectPicker.js";
 // 宿主 UI 扩展点（issue #146）：会话行的右键菜单走「slot 条目」这一条通道。
@@ -239,7 +246,7 @@ function usePluginSectionCollapse(): [ReadonlySet<string>, (key: string) => void
 const LS_LP_SIZES = "pi-web-ui:lp-sizes";
 /** 分区权重：宿主三键 + 插件自定义分区键（`plugin:…`，缺省 1）。 */
 type LpWeights = Record<string, number>;
-const DEFAULT_LP_WEIGHTS: LpWeights = { projects: 1, convs: 1, sessions: 1 };
+const DEFAULT_LP_WEIGHTS: LpWeights = { projects: 1, groups: 1, convs: 1, sessions: 1 };
 /** 折叠区仅留标题高度（与 styles.css 的 .lp-section.collapsed 对齐）。 */
 const LP_COLLAPSED_HEADER_PX = 32;
 /** P3：插件运行条目状态 → i18n key（tooltip 文案）。 */
@@ -310,6 +317,7 @@ export const LeftPanel = memo(function LeftPanel({
 	const [collapseConvs, toggleConvs] = useCollapsed(LS_COLLAPSE_CONVS, false);
 	const [collapseSessions, toggleSessions] = useCollapsed(LS_COLLAPSE_SESSIONS, false);
 	const [pluginCollapsed, togglePluginCollapsed] = usePluginSectionCollapse();
+	const [collapseGroups, setCollapseGroups] = useState(false);
 	const [collapsedSubagents, toggleSubagents] = useCollapsedSubagents();
 	const [visibleSessionCount, setVisibleSessionCount] = useState(60);
 	useEffect(() => {
@@ -795,7 +803,7 @@ export const LeftPanel = memo(function LeftPanel({
 		return [...conversations, ...filteredElsewhere];
 	}, [conversations, elsewhere]);
 	// P2：分区顺序与显隐（宏观来自宿主 leftpanel.sections 的合并结果；布局页可隐藏 / 调序）。
-	const sectionPlan = planLeftSections(uiSections);
+	const sectionPlan = withDeviceGroupSection(planLeftSections(uiSections));
 	const shownPlan = sectionPlan.filter((p) => p.shown);
 	const collapsedOf = (k: LpSectionKey): boolean =>
 		k === "projects"
@@ -804,7 +812,9 @@ export const LeftPanel = memo(function LeftPanel({
 				? collapseConvs
 				: k === "sessions"
 					? collapseSessions
-					: pluginCollapsed.has(k);
+					: k === "groups"
+						? collapseGroups
+						: pluginCollapsed.has(k);
 	/** 参与权重的分区：显示中且有内容（项目区需有项目，运行区需有运行对话）。 */
 	/** P3：运行分区的条目数 = 对话（含另一处）+ 插件运行条目；两者任一有就显示分区。 */
 	const pluginItemCount = (uiPluginRunning ?? []).reduce((n, g) => n + g.items.length, 0);
@@ -889,7 +899,7 @@ export const LeftPanel = memo(function LeftPanel({
 			window.addEventListener("pointermove", onMove);
 			window.addEventListener("pointerup", onUp);
 		},
-		[weights, flexKeys, collapseProjects, collapseConvs, collapseSessions],
+		[weights, flexKeys, collapseProjects, collapseConvs, collapseSessions, collapseGroups, pluginCollapsed],
 	);
 
 	useEffect(() => {
@@ -1751,8 +1761,19 @@ export const LeftPanel = memo(function LeftPanel({
 			</div>
 		);
 	};
-	const renderSection = (key: LpSectionKey): React.ReactNode =>
-		key === "projects" || key === "convs" || key === "sessions" ? sectionNodes[key] : renderPluginSection(key);
+	const renderSection = (key: LpSectionKey): React.ReactNode => {
+		if (key === "groups") {
+			return (
+				<DeviceGroupSection
+					active={active}
+					selectedRoomId={activeGroupId}
+					flex={effFlex("groups")}
+					onCollapsedChange={setCollapseGroups}
+				/>
+			);
+		}
+		return key === "projects" || key === "convs" || key === "sessions" ? sectionNodes[key] : renderPluginSection(key);
+	};
 
 	return (
 		<aside ref={panelRef as React.RefObject<HTMLDivElement>} className="panel panel-left lp-panel">
@@ -1761,13 +1782,9 @@ export const LeftPanel = memo(function LeftPanel({
 					<FiChevronLeft />
 				</button>
 			)}
-			{!shownPlan.some(({ key }) => key === "projects") && (
-				<DeviceGroupSection active={active} selectedRoomId={activeGroupId} />
-			)}
 			{shownPlan.map(({ key }) => (
 				<Fragment key={key}>
 					{renderSection(key)}
-					{key === "projects" && <DeviceGroupSection active={active} selectedRoomId={activeGroupId} />}
 					{sashAfter.get(key) ?? null}
 				</Fragment>
 			))}

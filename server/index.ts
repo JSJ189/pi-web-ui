@@ -1518,7 +1518,7 @@ export interface DispatchSession {
 	/** 返回值语义见 SlashHost.newChat：布尔值 = 是否落在一个可接收首条的空白
 	 *  新对话（/new <prompt> 用）。此处只管转发，返回值被丢弃，故允许 void。
 	 *  preset = DSH Agent 预设（pi 引擎忽略）。 */
-	newChat(preset?: string, ephemeral?: boolean): Promise<boolean | void>;
+	newChat(preset?: string, ephemeral?: boolean, onReady?: (id: string) => void): Promise<boolean | void>;
 	editMessage(messageId: string, text: string, attachments?: PromptAttachment[]): Promise<void>;
 	forkSession?(messageId: string, position?: "before" | "at", targetConvId?: string): Promise<void>;
 	flushSnapshot(forceFull?: boolean): void;
@@ -1546,6 +1546,7 @@ export interface DispatchSession {
 	diffSandbox?(path?: string, requestId?: string): Promise<void>;
 	applySandboxToSource?(path: string | undefined, expectedRevision: string): Promise<void>;
 	destroySandbox?(path: string): Promise<void>;
+	refreshWorktreeInfo?(): Promise<void>;
 	switchWorktree?(path: string): Promise<void>;
 	removeWorktree?(path: string, force?: boolean): Promise<void>;
 	deleteSession(path: string): Promise<void>;
@@ -1751,6 +1752,12 @@ export interface DispatchSession {
 	deleteMcpServer?(name: string, scope: import("./protocol.js").McpScope): Promise<void>;
 	toggleMcpServer?(name: string, scope: import("./protocol.js").McpScope, enabled: boolean): Promise<void>;
 	reloadMcp?(): Promise<void>;
+	handleMcpOAuth?(
+		msg: Extract<
+			ClientMessage,
+			{ type: "mcp_oauth_start" | "mcp_oauth_finish" | "mcp_oauth_status" | "mcp_oauth_cancel" }
+		>,
+	): Promise<void>;
 	installSkill?(name: string, scope: "global" | "project", content: string): Promise<void>;
 	uninstallSkill?(name: string, scope: "global" | "project"): Promise<void>;
 	fetchMcpMarket?(source?: string, query?: string, page?: number, refresh?: boolean): Promise<void>;
@@ -1824,12 +1831,14 @@ export interface EngineService {
 	takeOverConversation?(targetId: string, ownerId: string, convId: string): Promise<void>;
 	/** 跨页作答预告 + 答案转交（pi 引擎实现；DSH 未实现 → dispatch 回落提示）。 */
 	peekElsewhereQuestion?(targetId: string, ownerId: string, convId: string): Promise<void>;
+	navigateQuestion?(targetId: string, id: string): Promise<void>;
 	answerElsewhereQuestion?(
 		targetId: string,
 		ownerId: string,
 		id: string,
 		answers: { id: string; selected: string[]; custom?: string }[],
 		cancelled?: boolean,
+		cancelReason?: string,
 	): Promise<void>;
 	onQuit?: (() => boolean) | undefined;
 	onToolEvent?:
@@ -2055,10 +2064,14 @@ const service: EngineService = {
 		}
 		return Promise.resolve();
 	},
-	answerElsewhereQuestion(targetId, ownerId, id, answers, cancelled) {
+	navigateQuestion(targetId, id) {
+		const targetSvc = ensureEngine(resolveClientEngine(targetId));
+		return targetSvc.navigateQuestion?.(targetId, id) ?? Promise.resolve();
+	},
+	answerElsewhereQuestion(targetId, ownerId, id, answers, cancelled, cancelReason) {
 		const targetSvc = ensureEngine(resolveClientEngine(targetId));
 		if (typeof targetSvc.answerElsewhereQuestion === "function") {
-			return targetSvc.answerElsewhereQuestion(targetId, ownerId, id, answers, cancelled);
+			return targetSvc.answerElsewhereQuestion(targetId, ownerId, id, answers, cancelled, cancelReason);
 		}
 		return Promise.resolve();
 	},
@@ -3174,11 +3187,11 @@ wss.on("connection", (ws) => {
 			if (handlePresetAndDshMessage(msg, cs)) return;
 			if (handleModelAndProviderMessage(msg, cs)) return;
 			if (handleTerminalMessage(msg, cs)) return;
-			if (handleSessionLifecycleMessage(msg, cs)) return;
+			if (handleSessionLifecycleMessage(msg, cs, send)) return;
 			if (handlePlanAndGoalMessage(msg, cs)) return;
 			if (handleScheduleMessage(msg, scheduler, send)) return;
 			if (handleRemoteSshMessage(msg, remoteSshService, send)) return;
-			if (handleSettingsMessage(msg, cs)) return;
+			if (handleSettingsMessage(msg, cs, send)) return;
 			if (handleCanvasMessage(msg, DATA_DIR, canvasOrchestrator, send, { runBase: cs.cwd })) return;
 			if (handleInteractiveResponseMessage(msg, cs, service, clientId, send)) return;
 			if (
@@ -3206,6 +3219,22 @@ wss.on("connection", (ws) => {
 
 			switch (msg.type) {
 				case "prompt": {
+					// No await between identity validation and prompt(): engines capture
+					// their conversation synchronously at entry.
+					if (
+						msg.targetConversationId !== undefined &&
+						(typeof msg.targetConversationId !== "string" ||
+							!msg.targetConversationId ||
+							cs.activeConversationId?.() !== msg.targetConversationId)
+					) {
+						send({
+							type: "notice",
+							level: "warning",
+							text: "发送已取消：目标对话已改变，请重新发送。",
+							textEn: "Prompt canceled: the target conversation changed. Please send again.",
+						});
+						break;
+					}
 					const hasAttach = Boolean(msg.attachments && msg.attachments.length > 0);
 					if (!msg.text?.trim() && !hasAttach) {
 						send({
@@ -3273,6 +3302,9 @@ wss.on("connection", (ws) => {
 							textEn: "Takeover is not supported by the current engine; use the pi engine.",
 						});
 					}
+					break;
+				case "navigate_question":
+					if (typeof service.navigateQuestion === "function") void service.navigateQuestion(clientId, msg.id);
 					break;
 				case "peek_elsewhere_question":
 					if (typeof service.peekElsewhereQuestion === "function") {

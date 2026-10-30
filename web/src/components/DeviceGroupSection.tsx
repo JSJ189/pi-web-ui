@@ -142,14 +142,20 @@ function openGroup(detail: { roomId?: string; create?: boolean; manage?: boolean
 export function DeviceGroupSection({
 	active = true,
 	selectedRoomId,
+	flex,
+	onCollapsedChange,
 }: {
 	active?: boolean;
 	selectedRoomId?: string | null;
+	flex?: number;
+	onCollapsedChange?: (collapsed: boolean) => void;
 }) {
 	const { locale } = useI18n();
 	const w = words[isZhLocale(locale) ? "zh" : "en"];
 	const [collapsed, setCollapsed] = useState(false);
+	useEffect(() => onCollapsedChange?.(collapsed), [collapsed, onCollapsedChange]);
 	const [rooms, setRooms] = useState<SidebarDeviceGroup[]>([]);
+	const [bound, setBound] = useState<boolean | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<ReturnType<typeof deviceGroupErrorKind> | null>(null);
 	const [renaming, setRenaming] = useState<string | null>(null);
@@ -169,13 +175,18 @@ export function DeviceGroupSection({
 
 	useEffect(() => {
 		if (!active) return;
+		let confirmedBound = false;
 		const poll = createDeviceGroupRefresh(
 			async (signal) => {
+				const status = await deviceGroupRequest<{ hubUrl?: string; deviceId?: string }>("status", signal);
+				confirmedBound = !!(status.hubUrl && status.deviceId);
+				if (!confirmedBound) return [];
 				const result = await deviceGroupRequest<{ rooms: SidebarDeviceGroup[] }>("rooms", signal);
 				if (!Array.isArray(result.rooms)) throw new Error("Invalid rooms response");
 				return result.rooms;
 			},
 			(next) => {
+				setBound(confirmedBound);
 				setRooms(next);
 				setError(null);
 				setLoading(false);
@@ -183,7 +194,6 @@ export function DeviceGroupSection({
 			(err) => {
 				setError(deviceGroupErrorKind(err));
 				setLoading(false);
-				setRooms([]);
 			},
 		);
 		refreshRef.current = poll;
@@ -264,8 +274,14 @@ export function DeviceGroupSection({
 		});
 	};
 
+	if (bound === false || (bound === null && loading)) return null;
+
 	return (
-		<section className={`lp-section dg-side-section ${collapsed ? "collapsed" : ""}`} aria-label={w.groups}>
+		<section
+			className={`lp-section dg-side-section ${collapsed ? "collapsed" : ""}`}
+			aria-label={w.groups}
+			style={!collapsed && flex !== undefined ? { flex: `${flex} 1 0px` } : undefined}
+		>
 			<div className="lp-section-header">
 				<button
 					type="button"

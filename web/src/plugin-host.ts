@@ -51,6 +51,8 @@ import { isDesktopShell } from "./desktop";
 import type { UiPluginCatalogEntry } from "./types";
 import { randomUuid } from "./uuid";
 
+import { requestNewChat } from "./new-chat-request";
+
 const PLUGIN_HOST_GLOBAL = "__piWebUiHost";
 /** 宿主 API 版本：插件可用它判断宿主能力（> 本值表示宿主更新）。
  *  2 = 新增 `compose()`（注入输入框草稿）。
@@ -119,7 +121,9 @@ interface PluginHostStartChatOptions {
 	prompt: string;
 	/** 是否先新开一个对话，默认 true。 */
 	newChat?: boolean;
-	/** 新对话的工作目录（不给 = 不动；切目录失败时服务端会自己提示，流程继续）。 */
+	/** Completion of accepted delivery; false means creation, readiness or sending failed. */
+	onResult?: (ok: boolean) => void;
+	/** 新对话的工作目录（不给 = 不动；切目录失败或超时停止发送）。 */
 	cwd?: string;
 	/** 新对话要用的模型（canonical `provider/model`，须在 models.list() 里；
 	 *  非法 id 直接拒绝（startChat 回 false），不建对话、不动旧对话的模型。
@@ -567,7 +571,7 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 	const pollMs = Math.max(1, Number(deps.pollMs ?? 100));
 	const timeoutMs = Math.max(pollMs, Number(deps.timeoutMs ?? 8000));
 
-	/** 轮询等条件成立；超时返回 false（调用方继续，不静默放弃）。 */
+	/** Wait for confirmed state; callers must stop on timeout. */
 	const waitFor = async (ok: () => boolean): Promise<boolean> => {
 		const deadline = Date.now() + timeoutMs;
 		for (;;) {
@@ -597,7 +601,7 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 	};
 
 	/** 把当前（新）对话切到指定模型：发 set_model 后等快照里的 model.id 落定。
-	 *  超时也继续（不静默丢 prompt，与 cwd/new_chat 同哲学）。 */
+	 *  模型确认超时后继续发送；服务端模型切换错误由其自身提示。 */
 	const applyModel = async (model: string): Promise<void> => {
 		if (!model) return;
 		deps.send({ type: "set_model", modelId: model });
@@ -606,21 +610,22 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 		}
 	};
 
-	const run = async (prompt: string, opts: PluginHostStartChatOptions): Promise<void> => {
+	const run = async (prompt: string, opts: PluginHostStartChatOptions): Promise<boolean> => {
 		const cwd = String(opts.cwd ?? "").trim();
 		if (cwd && deps.getCwd() !== cwd) {
-			deps.send({ type: "set_cwd", path: cwd });
-			await waitFor(() => deps.getCwd() === cwd);
+			if (!deps.send({ type: "set_cwd", path: cwd })) return false;
+			if (!(await waitFor(() => deps.getCwd() === cwd))) return false;
 		}
-		if (opts.newChat !== false) {
-			const before = deps.getConversationId();
-			deps.send({ type: "new_chat" });
-			// 新对话换上（id 变）/ 本来就是空白对话，两者都算就绪
-			await waitFor(() => deps.getConversationId() !== before || deps.isConversationBlank());
-		}
+		if (!deps.isReady()) return false;
+		const sessionId = opts.newChat !== false ? await requestNewChat(deps.send, timeoutMs) : deps.getConversationId();
+		if (opts.newChat !== false && sessionId && !(await waitFor(() => deps.getConversationId() === sessionId)))
+			return false;
+		if (!sessionId || !deps.isReady()) return false;
 		const model = String(opts.model ?? "").trim();
 		if (model) await applyModel(model);
-		deps.send({ type: "prompt", text: prompt });
+		if (!deps.isReady() || deps.getConversationId() !== sessionId || (cwd && deps.getCwd() !== cwd)) return false;
+		deps.setView("chat");
+		return deps.send({ type: "prompt", text: prompt, targetConversationId: sessionId });
 	};
 
 	return {
@@ -636,7 +641,18 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 			const model = String(opts?.model ?? "").trim();
 			// 非法模型直接拒绝：不发任何消息，不建对话、不动旧对话的模型。
 			if (model && !isKnownModel(model)) return false;
-			const exec = (): Promise<void> => run(prompt, opts ?? { prompt });
+			const exec = async (): Promise<void> => {
+				let ok = false;
+				try {
+					ok = await run(prompt, opts ?? { prompt });
+				} finally {
+					try {
+						opts?.onResult?.(ok);
+					} catch {
+						/* Consumer callbacks cannot block the queue. */
+					}
+				}
+			};
 			let task: Promise<void>;
 			if (startChatPending > 0) {
 				// 已有序列在跑或排队：链到队尾（含 prompt 发出）再启动，防 new_chat 插队串话。
@@ -730,19 +746,22 @@ export function createPluginHostApi(deps: PluginHostDeps): PluginHostApi {
 			}
 			let sessionId = deps.getConversationId() ?? undefined;
 			if (opts?.newChat !== false) {
-				const before = sessionId;
-				deps.send({ type: "new_chat" });
-				await waitFor(() => deps.getConversationId() !== before || deps.isConversationBlank());
-				sessionId = deps.getConversationId() ?? undefined;
+				sessionId = (await requestNewChat(deps.send, timeoutMs)) ?? undefined;
+				if (!sessionId || !(await waitFor(() => deps.getConversationId() === sessionId)))
+					return { ok: false, error: "Conversation creation failed or timed out" };
 			}
 			const model = String(opts?.model ?? "").trim();
 			if (model) {
 				if (!isKnownModel(model)) return { ok: false, error: `未知模型：${model}（先调 models.list() 取可用列表）` };
 				await applyModel(model);
-				sessionId = deps.getConversationId() ?? sessionId;
+				if (deps.getConversationId() !== sessionId) return { ok: false, error: "Conversation changed" };
 			}
 			const prompt = String(opts?.prompt ?? "").trim();
-			if (prompt) deps.send({ type: "prompt", text: prompt });
+			if (!sessionId || !deps.isReady()) return { ok: false, error: "Conversation unavailable" };
+			if (prompt) {
+				deps.setView("chat");
+				deps.send({ type: "prompt", text: prompt, targetConversationId: sessionId });
+			}
 			return { ok: true, ...(sessionId ? { sessionId } : {}) };
 		},
 		sessions: {

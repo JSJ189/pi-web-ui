@@ -576,6 +576,8 @@ export class SettingsService {
 				subagentDefaultTemplates: DEFAULT_TEMPLATES.map((t) => t.name),
 				subagentDefaultModel: this.settings.subagentDefaultModel ?? null,
 				subagentMaxDepth: this.settings.subagentMaxDepth ?? 0,
+				questionPresentation: this.settings.questionPresentation ?? "queue",
+				questionTimeoutSeconds: this.settings.questionTimeoutSeconds ?? 240,
 				subagentAutoWakeMaxTurns: this.settings.subagentAutoWakeMaxTurns ?? defaultSubagentAutoWakeMaxTurns(),
 				retryMaxAttempts: this.settings.retryMaxAttempts,
 				softCapTokens: this.settings.softCapTokens,
@@ -668,6 +670,8 @@ export class SettingsService {
 		toolApprovalEnabled?: boolean;
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
+		questionPresentation?: "queue" | "all" | "manual";
+		questionTimeoutSeconds?: number;
 		/** 同项目并行提醒开关（默认开；纯运行开关，下一轮即生效，无需 reload）。 */
 		parallelReminderEnabled?: boolean;
 		goalModeEnabled?: boolean;
@@ -941,6 +945,17 @@ export class SettingsService {
 			// 空串归一为 null（跟随主对话）；其余剥空白后存格式 provider/id。
 			const m = partial.subagentDefaultModel?.trim() ?? "";
 			next.subagentDefaultModel = m ? m : null;
+		}
+		if (partial.questionPresentation !== undefined) {
+			if (!["queue", "all", "manual"].includes(partial.questionPresentation))
+				throw new Error("Invalid questionnaire presentation");
+			next.questionPresentation = partial.questionPresentation;
+		}
+		if (partial.questionTimeoutSeconds !== undefined) {
+			const seconds = partial.questionTimeoutSeconds;
+			if (!Number.isSafeInteger(seconds) || seconds < 0 || seconds > 86400)
+				throw new Error("Question timeout must be 0–86400 seconds");
+			next.questionTimeoutSeconds = seconds;
 		}
 		if (partial.subagentMaxDepth !== undefined) {
 			const n = Math.floor(Number(partial.subagentMaxDepth));
