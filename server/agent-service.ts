@@ -13729,8 +13729,14 @@ export class ClientSession {
 			if (!conv) return;
 			conv.title = trimmed;
 			try {
-				const file = conv.session.sessionFile;
-				if (file !== undefined) SessionManager.open(resolve(file)).appendSessionInfo(trimmed);
+				// Write through the LIVE session manager, not a throwaway SessionManager.open().
+				// Only the live manager keeps its in-memory entry list and the transcript in
+				// sync, so the title also rides along when the file is created later: a
+				// brand-new conversation has no .jsonl yet (pi's _persist() refuses to write
+				// before the first user/assistant message), and a freshly opened manager on a
+				// missing path silently drops appendSessionInfo(). That made a rename of a
+				// not-yet-flushed conversation disappear after a server restart.
+				conv.session.setSessionName(trimmed);
 			} catch {
 				// in-memory title still updated; transcript write is best-effort
 			}
