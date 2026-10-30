@@ -12,11 +12,13 @@ export function createDeviceCollabService(options: {
 	files?: ReturnType<typeof createDeviceFileSync>;
 	workspaceResolver?: (input: {
 		roomId: string;
+		sourceBotId: string;
 		context: DeviceCollabContext;
 		signal?: AbortSignal;
 	}) => Promise<{ root: string; files: ReturnType<typeof createDeviceFileSync>; release(): void }>;
 	fetch?: typeof fetch;
 	getParentTask?: (context?: DeviceCollabContext) => string | undefined;
+	getSourceBot?: (context?: DeviceCollabContext) => string | undefined;
 }): DeviceCollabService {
 	const root = options.root === undefined ? undefined : resolve(options.root);
 	return {
@@ -25,18 +27,32 @@ export function createDeviceCollabService(options: {
 			try {
 				signal?.throwIfAborted();
 				if (!context) throw new Error("Invalid workspace");
-				if (options.workspaceResolver && !["list_devices", "list_rooms", "create_room"].includes(action)) {
+				const readOnly = action === "list_bots" || action === "list_rooms";
+				if (!readOnly && !args.sourceBotId) throw new Error("Source bot required");
+				if (options.workspaceResolver && !["list_bots", "list_rooms", "create_room"].includes(action)) {
 					if (!args.roomId) throw new Error("Room required");
-					workspace = await options.workspaceResolver({ roomId: args.roomId, context, signal });
+					if (!args.sourceBotId) throw new Error("Source bot required");
+					workspace = await options.workspaceResolver({
+						roomId: args.roomId,
+						sourceBotId: args.sourceBotId,
+						context,
+						signal,
+					});
 					if (resolve(context.cwd) !== resolve(workspace.root)) throw new Error("Invalid workspace");
 				} else if (!options.workspaceResolver && resolve(context.cwd) !== root) throw new Error("Invalid workspace");
 				const config = options.getConfig();
 				if (!config || !config.deviceId || !config.credential) throw new Error("Device unavailable");
-				if (!["list_devices", "list_rooms"].includes(action) && !config.allowExecution)
+				if (!["list_bots", "list_rooms"].includes(action) && !config.allowExecution)
 					throw new Error("Device execution disabled");
 				const base = checkedUrl(config.hubUrl);
 				if (!["http:", "https:"].includes(base.protocol) || base.search) throw new Error("Invalid hub URL");
 				const parentTaskId = options.getParentTask?.(context);
+				const boundBot = options.getSourceBot?.(context);
+				if (args.sourceBotId && boundBot && args.sourceBotId !== boundBot) throw new Error("Invalid source bot");
+				if (action === "create_room" && options.workspaceResolver) {
+					workspace = await options.workspaceResolver({ roomId: "", sourceBotId: args.sourceBotId!, context, signal });
+					if (resolve(context.cwd) !== resolve(workspace.root)) throw new Error("Invalid workspace");
+				}
 				const request = async (path: string, body?: unknown) => {
 					signal?.throwIfAborted();
 					const url = new URL(base.href);
@@ -62,50 +78,55 @@ export function createDeviceCollabService(options: {
 					return `rooms/${encodeURIComponent(args.roomId)}`;
 				};
 				switch (action) {
-					case "list_devices":
-						return await request("devices");
+					case "list_bots": {
+						const result = (await request("bots")) as { bots?: { deviceId: string }[] };
+						return { bots: result.bots?.map((bot) => ({ ...bot, local: bot.deviceId === config.deviceId })) ?? [] };
+					}
 					case "list_rooms":
 						return await request("rooms");
 					case "create_room":
-						if (!args.targetDeviceId) throw new Error("Target required");
+						if (!args.targetBotId) throw new Error("Target required");
 						return await request("rooms", {
 							name: args.name,
-							deviceIds: [...new Set([config.deviceId, args.targetDeviceId])],
+							sourceBotId: args.sourceBotId,
+							botIds: [...new Set([args.sourceBotId, args.targetBotId])],
 						});
 					case "send_message":
-						return await request(`${room()}/messages`, { text: args.message });
+						return await request(`${room()}/messages`, { text: args.message, sourceBotId: args.sourceBotId });
 					case "send_task":
-						if (!args.targetDeviceId) throw new Error("Target required");
+						if (!args.targetBotId) throw new Error("Target required");
 						return await request(`${room()}/messages`, {
 							text: args.prompt,
-							targetDeviceIds: [args.targetDeviceId],
+							sourceBotId: args.sourceBotId,
+							targetBotIds: [args.targetBotId],
 							idempotencyKey: randomUUID(),
 							...(parentTaskId ? { parentTaskId } : {}),
 						});
 					case "sync_files": {
-						if (!args.targetDeviceId || !args.roomId || !args.paths?.length)
-							throw new Error("Transfer fields required");
+						if (!args.targetBotId || !args.roomId || !args.paths?.length) throw new Error("Transfer fields required");
 						const files = workspace?.files ?? options.files;
 						if (!files) throw new Error("File workspace unavailable");
 						const bundle = await files.prepare({ paths: args.paths, signal });
 						const response = await request("transfers", {
 							action: "stage",
 							roomId: args.roomId,
-							targetDeviceId: args.targetDeviceId,
+							sourceBotId: args.sourceBotId,
+							targetBotId: args.targetBotId,
 							bundle,
 						});
 						return summarizeTransfer(response);
 					}
 					case "transfer_preview":
 					case "transfer_apply": {
-						if (!args.roomId || !args.targetDeviceId || !args.transferId) throw new Error("Transfer fields required");
+						if (!args.roomId || !args.targetBotId || !args.transferId) throw new Error("Transfer fields required");
 						if (action === "transfer_apply" && (!args.revision || !Array.isArray(args.overwritePaths)))
 							throw new Error("Explicit apply required");
 						return summarizeTransfer(
 							await request("transfers", {
 								action: action === "transfer_apply" ? "apply" : "preview",
 								roomId: args.roomId,
-								targetDeviceId: args.targetDeviceId,
+								sourceBotId: args.sourceBotId,
+								targetBotId: args.targetBotId,
 								transferId: args.transferId,
 								...(action === "transfer_apply"
 									? { revision: args.revision, overwritePaths: args.overwritePaths }

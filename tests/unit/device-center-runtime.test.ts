@@ -2,76 +2,205 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createDeviceCollabService } from "../../server/device-center/collab-service.js";
-import { createDeviceRuntime, type DeviceRuntimeWorkspaces } from "../../server/device-center/runtime.js";
+import { createDeviceRuntime } from "../../server/device-center/runtime.js";
+import { createLocalBotRegistry } from "../../server/device-center/bots.js";
 import { createDeviceFileSync } from "../../server/device-center/file-sync.js";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	vi.unstubAllGlobals();
 });
 async function fixture() {
 	const dir = await mkdtemp(join(tmpdir(), "device-runtime-"));
 	cleanups.push(() => rm(dir, { recursive: true, force: true }));
 	const roots = [join(dir, "one"), join(dir, "two")];
 	await Promise.all(roots.map((root) => mkdir(root)));
-	const bindings = new Map(roots.map((root, i) => [`room${i}`, { root, revision: `rev${i}` }]));
+	const dataDir = join(dir, "data");
+	const bots = await createLocalBotRegistry(dataDir);
+	const registered = await Promise.all(
+		roots.map((cwd, i) =>
+			bots.upsert({
+				name: `Bot ${i}`,
+				description: "",
+				systemPrompt: "Local instructions",
+				cwd,
+				tools: ["read"],
+				skills: [],
+				mcpServers: [],
+				enabled: true,
+			}),
+		),
+	);
 	let held = 0;
-	const workspaces: DeviceRuntimeWorkspaces = {
-		get: (room) => bindings.get(room),
-		async acquire(room) {
-			const binding = bindings.get(room);
-			if (!binding) throw new Error("Not bound");
-			held++;
-			return {
-				...binding,
-				release() {
+	const acquire = bots.acquire.bind(bots);
+	bots.acquire = async (id) => {
+		const lease = await acquire(id);
+		held++;
+		let released = false;
+		return {
+			...lease,
+			release() {
+				if (!released) {
+					released = true;
 					held--;
-				},
-			};
-		},
+					lease.release();
+				}
+			},
+		};
 	};
 	const options = {
 		config: { hubUrl: "http://127.0.0.1:8999", deviceId: "device", credential: "secret", allowExecution: true },
 		localOrigin: "http://127.0.0.1:8989",
-		dataDir: join(dir, "data"),
-		workspaces,
+		dataDir,
+		bots,
 	};
-	return { dir, roots, bindings, options, held: () => held };
+	return {
+		dir,
+		roots,
+		registered,
+		options,
+		held: () => held,
+		task: (roomId: string, id = roomId) => ({
+			roomId,
+			id,
+			botId: registered[Number(roomId.replace("room", ""))]?.id ?? "missing",
+			deviceId: "device",
+			botRevision: registered[Number(roomId.replace("room", ""))]?.revision ?? 1,
+			attemptId: `attempt-${id}`,
+			text: "test",
+		}),
+		command: (roomId: string) => {
+			const bot = bots.get(registered[Number(roomId.replace("room", ""))].id)!;
+			return { roomId, targetBotId: bot.id, targetBotRevision: bot.revision };
+		},
+	};
 }
-const task = (roomId: string, id = roomId) => ({ roomId, id, attemptId: `attempt-${id}`, text: "test" });
 const signal = () => new AbortController().signal;
 
-describe("room device runtime", () => {
-	it("creates a room without an existing binding through the real service resolver path", async () => {
+describe("Bot-only device runtime", () => {
+	it("allows ordinary sessions to list but requires an executor-bound owner for every write, even at the same cwd", async () => {
 		const f = await fixture();
-		const resolver = vi.fn().mockRejectedValue(new Error("No existing room binding"));
-		const request = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "new-room" }), { status: 200 }));
-		const service = createDeviceCollabService({
-			getConfig: () => f.options.config,
-			workspaceResolver: resolver,
-			fetch: request,
+		await writeFile(join(f.roots[0], "payload.txt"), "Bot-owned payload");
+		const request = vi.fn(
+			async (_url: unknown, _init?: RequestInit) =>
+				new Response(JSON.stringify({ bots: [], rooms: [], transferId: "staged" }), { status: 200 }),
+		);
+		vi.stubGlobal("fetch", request);
+		const writes = [
+			{ action: "create_room" as const, args: { name: "New room", targetBotId: "remote" } },
+			{ action: "send_message" as const, args: { roomId: "room0", message: "Hello" } },
+			{ action: "sync_files" as const, args: { roomId: "room0", targetBotId: "remote", paths: ["payload.txt"] } },
+		];
+		let runtime!: ReturnType<typeof createDeviceRuntime>;
+		runtime = createDeviceRuntime({
+			...f.options,
+			executorFactory(options) {
+				return {
+					async run(task) {
+						options.onSession?.(task.id, "bot-session");
+						for (const { action, args } of writes) {
+							await runtime.collabService.execute(action, { ...args, sourceBotId: task.botId }, undefined, {
+								cwd: options.cwd,
+								sessionId: "bot-session",
+							});
+							expect(f.held()).toBe(1);
+						}
+						return "done";
+					},
+					close() {},
+				};
+			},
 		});
-		expect(
-			await service.execute("create_room", { name: "New group", targetDeviceId: "other" }, undefined, {
-				cwd: f.roots[0],
-				sessionId: "human",
-			}),
-		).toEqual({ id: "new-room" });
-		expect(resolver).not.toHaveBeenCalled();
-		expect(request).toHaveBeenCalledOnce();
-		const denied = createDeviceCollabService({
-			getConfig: () => ({ ...f.options.config, allowExecution: false }),
-			workspaceResolver: resolver,
-			fetch: request,
+		cleanups.push(() => runtime.close());
+		const human = { cwd: f.roots[0], sessionId: "human" };
+		for (const action of ["list_bots", "list_rooms"] as const) {
+			await runtime.collabService.execute(action, {}, undefined, human);
+		}
+		expect(request).toHaveBeenCalledTimes(2);
+		request.mockClear();
+		for (const context of [human, { cwd: f.roots[0] }]) {
+			for (const { action, args } of writes) {
+				await expect(
+					runtime.collabService.execute(action, { ...args, sourceBotId: f.registered[0].id }, undefined, context),
+				).rejects.toThrow("request failed");
+				expect(f.held()).toBe(0);
+			}
+		}
+		expect(request).not.toHaveBeenCalled();
+		expect(await runtime.onTask(f.task("room0"))).toBe("done");
+		expect(request).toHaveBeenCalledTimes(3);
+		const bodies = request.mock.calls.map(([, init]) => JSON.parse(init!.body as string));
+		expect(bodies.every((body) => body.sourceBotId === f.registered[0].id)).toBe(true);
+		expect(bodies[0]).toMatchObject({ botIds: [f.registered[0].id, "remote"] });
+		expect(bodies[1]).toMatchObject({ text: "Hello" });
+		expect(bodies[2]).toMatchObject({ action: "stage", targetBotId: "remote", bundle: expect.any(Object) });
+		request.mockClear();
+		for (const { action, args } of writes) {
+			await expect(
+				runtime.collabService.execute(action, { ...args, sourceBotId: f.registered[0].id }, undefined, {
+					cwd: f.roots[0],
+					sessionId: "bot-session",
+				}),
+			).rejects.toThrow("request failed");
+		}
+		expect(request).not.toHaveBeenCalled();
+		expect(f.held()).toBe(0);
+	});
+	it("rejects legacy routes, wrong devices, stale revisions and disabled Bots before execution", async () => {
+		const f = await fixture();
+		let executions = 0;
+		const runtime = createDeviceRuntime({
+			...f.options,
+			executorFactory() {
+				executions++;
+				return {
+					async run() {
+						return "done";
+					},
+					close() {},
+				};
+			},
 		});
-		await expect(
-			denied.execute("create_room", { name: "New group", targetDeviceId: "other" }, undefined, { cwd: f.roots[0] }),
-		).rejects.toThrow("request failed");
-		await expect(
-			service.execute("create_room", { name: "New group", targetDeviceId: "other" }, undefined),
-		).rejects.toThrow("request failed");
-		expect(request).toHaveBeenCalledOnce();
+		cleanups.push(() => runtime.close());
+		for (const patch of [
+			{ botId: "" },
+			{ deviceId: "other" },
+			{ botRevision: 0 },
+			{ botRevision: undefined },
+			{ roomId: "" },
+		]) {
+			await expect(
+				runtime.onTask({ ...f.task("room0"), ...patch } as Parameters<typeof runtime.onTask>[0]),
+			).rejects.toThrow();
+			expect(f.held()).toBe(0);
+		}
+		const revised = await f.options.bots.upsert({ ...f.registered[0], systemPrompt: "Updated" });
+		await expect(runtime.onTask(f.task("room0"))).rejects.toThrow();
+		expect(f.held()).toBe(0);
+		expect(executions).toBe(0);
+		expect(await runtime.onTask({ ...f.task("room0"), botRevision: revised.revision })).toBe("done");
+		await f.options.bots.upsert({ ...revised, enabled: false });
+		await expect(runtime.onTask({ ...f.task("room0"), botRevision: revised.revision + 1 })).rejects.toThrow();
+		expect(executions).toBe(1);
+		expect(f.held()).toBe(0);
+	});
+
+	it("requires targetBotId for transfers and rejects cancelled or closed admission", async () => {
+		const f = await fixture();
+		const runtime = createDeviceRuntime(f.options);
+		cleanups.push(() => runtime.close());
+		for (const payload of [null, [], {}, { roomId: "room0" }, { roomId: "room0", botId: f.registered[0].id }]) {
+			await expect(runtime.onCommand("transfer_preview", payload, signal())).rejects.toThrow();
+		}
+		const controller = new AbortController();
+		controller.abort();
+		await expect(runtime.onCommand("transfer_preview", f.command("room0"), controller.signal)).rejects.toThrow();
+		await expect(runtime.onTask(f.task("room0"), controller.signal)).rejects.toThrow();
+		expect(f.held()).toBe(0);
+		await runtime.close();
+		await expect(runtime.onTask(f.task("room0"))).rejects.toThrow("closed");
+		await expect(runtime.onCommand("transfer_preview", f.command("room0"), signal())).rejects.toThrow("closed");
 	});
 	it("creates each task executor in its explicit room root without restarting", async () => {
 		const f = await fixture();
@@ -89,9 +218,9 @@ describe("room device runtime", () => {
 			},
 		});
 		cleanups.push(() => runtime.close());
-		await expect(runtime.onTask(task("missing"))).rejects.toThrow("配置项目");
-		expect(await runtime.onTask(task("room0"))).toBe(f.roots[0]);
-		expect(await runtime.onTask(task("room1"))).toBe(f.roots[1]);
+		await expect(runtime.onTask(f.task("missing"))).rejects.toThrow("Target Bot unavailable");
+		expect(await runtime.onTask(f.task("room0"))).toBe(f.roots[0]);
+		expect(await runtime.onTask(f.task("room1"))).toBe(f.roots[1]);
 		expect(cwds).toEqual(f.roots);
 		expect(f.held()).toBe(0);
 	});
@@ -107,12 +236,32 @@ describe("room device runtime", () => {
 		cleanups.push(() => runtime.close());
 		const bundle = await source.prepare({ paths: ["same.txt"] });
 		const stage = async (roomId: string) =>
-			runtime.onCommand("transfer_stage", { roomId, bundle }, signal()) as Promise<{ id: string; revision: string }>;
+			runtime.onCommand("transfer_stage", { ...f.command(roomId), bundle }, signal()) as Promise<{
+				id: string;
+				revision: string;
+			}>;
+		for (const targetBotRevision of [undefined, 0, 2]) {
+			await expect(
+				runtime.onCommand("transfer_stage", { ...f.command("room0"), targetBotRevision, bundle }, signal()),
+			).rejects.toThrow("revision mismatch");
+			expect(f.held()).toBe(0);
+		}
 		const first = await stage("room0");
 		expect(first.id).toBeTruthy();
 		expect(f.held()).toBe(0);
 		await expect(
-			runtime.onCommand("transfer_preview", { roomId: "room1", transferId: first.id }, signal()),
+			runtime.onCommand("transfer_preview", { ...f.command("room1"), roomId: "room0", transferId: first.id }, signal()),
+		).rejects.toThrow("unavailable");
+		await expect(
+			runtime.onCommand(
+				"transfer_apply",
+				{ ...f.command("room0"), transferId: first.id, revision: "stale", overwritePaths: [] },
+				signal(),
+			),
+		).rejects.toThrow();
+		expect(f.held()).toBe(0);
+		await expect(
+			runtime.onCommand("transfer_preview", { ...f.command("room1"), transferId: first.id }, signal()),
 		).rejects.toThrow("unavailable");
 		await expect(runtime.onCommand("transfer_preview", { transferId: first.id }, signal())).rejects.toThrow(
 			"Room required",
@@ -121,7 +270,7 @@ describe("room device runtime", () => {
 			const staged = roomId === "room0" ? first : await stage(roomId);
 			await runtime.onCommand(
 				"transfer_apply",
-				{ roomId, transferId: staged.id, revision: staged.revision, overwritePaths: [] },
+				{ ...f.command(roomId), transferId: staged.id, revision: staged.revision, overwritePaths: [] },
 				signal(),
 			);
 		}
@@ -130,11 +279,11 @@ describe("room device runtime", () => {
 			"payload",
 		]);
 		const stale = await stage("room0");
-		f.bindings.set("room0", { root: f.roots[1], revision: "replacement" });
+		await f.options.bots.upsert({ ...f.registered[0], cwd: f.roots[1] });
 		await expect(
 			runtime.onCommand(
 				"transfer_apply",
-				{ roomId: "room0", transferId: stale.id, revision: stale.revision, overwritePaths: ["same.txt"] },
+				{ ...f.command("room0"), transferId: stale.id, revision: stale.revision, overwritePaths: ["same.txt"] },
 				signal(),
 			),
 		).rejects.toThrow("unavailable");
@@ -167,19 +316,23 @@ describe("room device runtime", () => {
 			},
 		});
 		cleanups.push(() => runtime.close());
-		const first = runtime.onTask(task("room0"));
+		const first = runtime.onTask(f.task("room0"));
 		const rejected = expect(first).rejects.toThrow();
 		await running;
 		const disconnected = runtime.onDisconnect();
 		await Promise.resolve();
 		expect(closes).toBe(1);
 		expect(f.held()).toBe(1);
-		await expect(runtime.onTask(task("room1"))).rejects.toThrow("busy");
+		await expect(f.options.bots.upsert({ ...f.registered[0], enabled: false })).rejects.toMatchObject({
+			code: "BOT_BUSY",
+		});
+		await expect(f.options.bots.remove(f.registered[0].id, 1)).rejects.toMatchObject({ code: "BOT_BUSY" });
+		await expect(runtime.onTask(f.task("room1"))).rejects.toThrow("busy");
 		settle("old completion");
 		await rejected;
 		await disconnected;
 		expect(f.held()).toBe(0);
-		expect(await runtime.onTask(task("room1"))).toBe("new task");
+		expect(await runtime.onTask(f.task("room1"))).toBe("new task");
 	});
 
 	it("retains the lease and blocks new tasks when executor stop is uncertain", async () => {
@@ -197,11 +350,55 @@ describe("room device runtime", () => {
 				};
 			},
 		});
-		await expect(runtime.onTask(task("room0"))).rejects.toThrow("stop uncertain");
+		await expect(runtime.onTask(f.task("room0"))).rejects.toThrow("stop uncertain");
 		expect(f.held()).toBe(1);
-		await expect(runtime.onTask(task("room1"))).rejects.toThrow("blocked");
+		await expect(f.options.bots.remove(f.registered[0].id, 1)).rejects.toMatchObject({ code: "BOT_BUSY" });
+		await expect(runtime.onTask(f.task("room1"))).rejects.toThrow("blocked");
 		await expect(runtime.onDisconnect()).rejects.toThrow("stop uncertain");
 		await expect(runtime.close()).rejects.toThrow("stop uncertain");
+	});
+
+	it("rejects cross-room, cross-Bot and wrong-cwd relay attempts from a bound task session", async () => {
+		const f = await fixture();
+		let runtime!: ReturnType<typeof createDeviceRuntime>;
+		runtime = createDeviceRuntime({
+			...f.options,
+			executorFactory(options) {
+				return {
+					async run(task) {
+						options.onSession?.(task.id, "bound-session");
+						for (const input of [
+							{ roomId: "room1", sourceBotId: f.registered[0].id, cwd: f.roots[0] },
+							{ roomId: "room0", sourceBotId: f.registered[1].id, cwd: f.roots[1] },
+							{ roomId: "room0", sourceBotId: f.registered[0].id, cwd: f.roots[1] },
+						]) {
+							await expect(
+								runtime.collabService.execute(
+									"send_task",
+									{ roomId: input.roomId, sourceBotId: input.sourceBotId, targetBotId: "other", prompt: "run" },
+									undefined,
+									{ cwd: input.cwd, sessionId: "bound-session" },
+								),
+							).rejects.toThrow();
+							expect(f.held()).toBe(1);
+						}
+						return "done";
+					},
+					close() {},
+				};
+			},
+		});
+		cleanups.push(() => runtime.close());
+		expect(await runtime.onTask(f.task("room0"))).toBe("done");
+		expect(f.held()).toBe(0);
+		await expect(
+			runtime.collabService.execute(
+				"send_task",
+				{ roomId: "room0", sourceBotId: f.registered[0].id, targetBotId: "other", prompt: "run" },
+				undefined,
+				{ cwd: f.roots[0], sessionId: "bound-session" },
+			),
+		).rejects.toThrow("not bound");
 	});
 
 	it("requires a matching task session for send_task and explicit execution permission for commands", async () => {
@@ -211,7 +408,7 @@ describe("room device runtime", () => {
 		await expect(
 			runtime.collabService.execute(
 				"send_task",
-				{ roomId: "room0", targetDeviceId: "other", prompt: "run" },
+				{ roomId: "room0", sourceBotId: f.registered[0].id, targetBotId: "other", prompt: "run" },
 				undefined,
 				{ cwd: f.roots[0], sessionId: "human" },
 			),
@@ -219,7 +416,7 @@ describe("room device runtime", () => {
 		await expect(
 			runtime.collabService.execute(
 				"sync_files",
-				{ roomId: "room1", targetDeviceId: "other", paths: ["file"] },
+				{ roomId: "room1", sourceBotId: f.registered[1].id, targetBotId: "other", paths: ["file"] },
 				undefined,
 				{ cwd: f.roots[0], sessionId: "human" },
 			),
@@ -227,7 +424,7 @@ describe("room device runtime", () => {
 		const denied = createDeviceRuntime({ ...f.options, config: { ...f.options.config, allowExecution: false } });
 		cleanups.push(() => denied.close());
 		await expect(
-			denied.onCommand("transfer_preview", { roomId: "room0", transferId: "any" }, signal()),
+			denied.onCommand("transfer_preview", { ...f.command("room0"), transferId: "any" }, signal()),
 		).rejects.toThrow("disabled");
 	});
 });

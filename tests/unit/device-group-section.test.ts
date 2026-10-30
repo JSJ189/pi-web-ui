@@ -7,7 +7,7 @@ import {
 	type SidebarDeviceGroup,
 } from "../../web/src/components/DeviceGroupSection";
 
-const room: SidebarDeviceGroup = { id: "one", name: "One", deviceIds: [] };
+const room: SidebarDeviceGroup = { id: "one", name: "One", botIds: [] };
 const drain = async () => {
 	for (let i = 0; i < 6; i++) await Promise.resolve();
 };

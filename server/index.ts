@@ -16,6 +16,7 @@
  *   all share one conversation list per project.
  *   PI_CODING_AGENT_DIR  pi config dir (auth/models/skills) — passed to the SDK
  */
+import { botExecutionMessageAllowed } from "./device-center/bot-execution.js";
 // MUST be imported before the SDK is loaded so on-disk patches apply cleanly.
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
@@ -85,7 +86,7 @@ import { McpProjectRuntimeRegistry } from "./mcp-project-runtime.js";
 import { installLocalDeviceCenter } from "./device-center/local.js";
 import { createDeviceConnector } from "./device-center/connector.js";
 import { createDeviceRuntime } from "./device-center/runtime.js";
-import { createDeviceWorkspaces } from "./device-center/workspaces.js";
+import { createLocalBotRegistry } from "./device-center/bots.js";
 import { setDeviceCollabService } from "./device-center/collab-tool.js";
 import { createDeviceDesktop } from "./device-center/desktop.js";
 
@@ -1116,31 +1117,32 @@ app.get("/plugins-shared/*splat", (req, res) => {
 const RESTART_CHILD_ENV = "PI_WEB_RESTART_CHILD";
 // Local-only device enrollment stays behind host authentication and ahead of the SPA fallback.
 const deviceDesktop = createDeviceDesktop({ app, dataDir: DATA_DIR, authorize: (req) => !AUTH_TOKEN || tokenOk(req) });
-const deviceWorkspaceRegistries = new Map<string, ReturnType<typeof createDeviceWorkspaces>>();
-function deviceWorkspaces(config: { hubUrl: string; deviceId: string }) {
-	const scope = JSON.stringify([config.hubUrl, config.deviceId]);
-	let registry = deviceWorkspaceRegistries.get(scope);
-	if (!registry) {
-		registry = createDeviceWorkspaces({ dataDir: DATA_DIR, defaultRoot: CWD, scope });
-		deviceWorkspaceRegistries.set(scope, registry);
-		void registry.catch(() => {
-			if (deviceWorkspaceRegistries.get(scope) === registry) deviceWorkspaceRegistries.delete(scope);
-		});
-	}
-	return registry;
-}
+const deviceBots = await createLocalBotRegistry(DATA_DIR);
 const deviceCenter = await installLocalDeviceCenter({
 	app,
 	dataDir: DATA_DIR,
-	workspaceRegistry: deviceWorkspaces,
-	async connect(config) {
+	bots: deviceBots,
+	botCatalog: {
+		defaultCwd: CWD,
+		dataDir: DATA_DIR,
+		models: async (signal) => {
+			signal.throwIfAborted();
+			const models = (await piServiceInstance?.pluginClient()?.listLocalBotModels()) ?? [];
+			signal.throwIfAborted();
+			return models;
+		},
+		projects: () => sharedStateStore.getRecentProjects(""),
+		defaultModel: () => sharedStateStore.getDefaultModel("pi"),
+		peekMcpBridge: (cwd) => mcpProjects.peekBridge(cwd),
+	},
+	async connect(config, syncBots) {
 		const localOrigin = `http://127.0.0.1:${PORT}`;
 		const runtime = createDeviceRuntime({
 			config,
 			localOrigin,
 			localAuthToken: AUTH_TOKEN,
 			dataDir: DATA_DIR,
-			workspaces: await deviceWorkspaces(config),
+			bots: deviceBots,
 		});
 		setDeviceCollabService(runtime.collabService);
 		const connector = createDeviceConnector({
@@ -1150,6 +1152,7 @@ const deviceCenter = await installLocalDeviceCenter({
 			localOrigin,
 			localAuthToken: AUTH_TOKEN,
 			onTask: runtime.onTask,
+			onConnect: syncBots,
 			onCommand: runtime.onCommand,
 			onDisconnect: () => {
 				void runtime
@@ -3390,6 +3393,16 @@ wss.on("connection", (ws) => {
 			return;
 		}
 		const msg = parsed as ClientMessage;
+		try {
+			const botClientId = clientId ?? (msg.type === "hello" ? msg.clientId : undefined);
+			if (botClientId && !botExecutionMessageAllowed(botClientId, msg.type)) {
+				ws.close(1008, "Bot control command denied");
+				return;
+			}
+		} catch {
+			ws.close(1008, "Invalid Bot execution capability");
+			return;
+		}
 
 		if (msg.type === "hello") {
 			clearTimeout(helloTimer);

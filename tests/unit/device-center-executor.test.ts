@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { resolve } from "node:path";
 import WebSocket, { WebSocketServer } from "ws";
 import { createDeviceTaskExecutor } from "../../server/device-center/executor.js";
+import type { LocalBot } from "../../server/device-center/bots.js";
 import type { ClientMessage, UiState } from "../../server/protocol.js";
 
 const cleanup: (() => Promise<void>)[] = [];
@@ -11,8 +12,27 @@ afterEach(async () => {
 	await Promise.all(cleanup.splice(0).map((fn) => fn()));
 });
 const cwd = resolve(".");
+const bot: LocalBot = {
+	id: "executor-bot",
+	revision: 1,
+	name: "Test Bot",
+	description: "",
+	systemPrompt: "Local instructions",
+	cwd,
+	tools: ["read"],
+	skills: [],
+	mcpServers: [],
+	enabled: true,
+};
 let taskSequence = 0;
-const task = () => ({ id: `executor-test-${++taskSequence}`, attemptId: "attempt-1", text: "Run the verification" });
+const task = () => ({
+	id: `executor-test-${++taskSequence}`,
+	botId: bot.id,
+	botRevision: bot.revision,
+	deviceId: "device",
+	attemptId: "attempt-1",
+	text: "Run the verification",
+});
 const assistant = (text: string) => ({ id: "a-1", role: "assistant", content: [{ type: "text", text }] });
 
 async function fixture(
@@ -94,6 +114,7 @@ async function fixture(
 	});
 	const executor = createDeviceTaskExecutor({
 		localOrigin: origin,
+		bot,
 		cwd,
 		localAuthToken: "test-token",
 		allowExecution: true,
@@ -123,23 +144,20 @@ function delta(socket: WebSocket, state: UiState, patch: Partial<UiState>, appen
 // These tests use real loopback sockets and the production protocol envelope,
 // without invoking models or weakening the existing approval mechanism.
 describe("device task executor", () => {
-	it("handshakes, switches cwd, creates a persistent task chat and extracts actual assistant text from deltas", async () => {
-		const f = await fixture(
-			(socket, state) => {
-				delta(socket, state, { isStreaming: true });
-				delta(socket, { ...state, rev: state.rev + 1 }, { isStreaming: false }, [
-					{ id: "tool", role: "toolResult", content: [{ type: "text", text: "SECRET TOOL OUTPUT" }] },
-					{
-						...assistant("Verified command: exit 0; repair commit abc123"),
-						content: [
-							{ type: "thinking", text: "HIDDEN THINKING" },
-							{ type: "text", text: "Verified command: exit 0; repair commit abc123" },
-						],
-					},
-				]);
-			},
-			{ changeCwd: true },
-		);
+	it("handshakes in the fixed Bot cwd, creates a persistent task chat and extracts actual assistant text from deltas", async () => {
+		const f = await fixture((socket, state) => {
+			delta(socket, state, { isStreaming: true });
+			delta(socket, { ...state, rev: state.rev + 1 }, { isStreaming: false }, [
+				{ id: "tool", role: "toolResult", content: [{ type: "text", text: "SECRET TOOL OUTPUT" }] },
+				{
+					...assistant("Verified command: exit 0; repair commit abc123"),
+					content: [
+						{ type: "thinking", text: "HIDDEN THINKING" },
+						{ type: "text", text: "Verified command: exit 0; repair commit abc123" },
+					],
+				},
+			]);
+		});
 		const t = {
 			...task(),
 			handoff: { repository: "repo", commit: "deadbeef", branch: "fix", instructions: "Verify first" },
@@ -150,21 +168,28 @@ describe("device task executor", () => {
 		expect(result).not.toContain("Conversation: task-chat");
 		expect(result).not.toMatch(/OLD HISTORY|RESUMED HISTORY|SECRET TOOL OUTPUT|HIDDEN THINKING/);
 		expect(f.authorization()).toBe("Bearer test-token");
-		expect(f.received.map((m) => m.type)).toEqual([
-			"hello",
-			"set_cwd",
-			"get_state",
-			"new_chat",
-			"rename_conversation",
-			"prompt",
-		]);
+		expect(f.received.map((m) => m.type)).toEqual(["hello", "new_chat", "prompt"]);
 		expect(f.received.find((m) => m.type === "new_chat")).toEqual({ type: "new_chat", ephemeral: false });
 		const prompt = f.received.find((m) => m.type === "prompt");
 		expect(prompt?.text).toContain("deadbeef");
 		expect(prompt?.text).toContain("dirty state");
-		expect(prompt?.text).toContain("isolated worktree");
+		expect(prompt?.text).toContain("configured fixed workspace");
 		expect(prompt?.text).toContain("greetings, questions and ordinary conversation");
 		expect(prompt?.text).toContain("final answer is delivered automatically to the group");
+	});
+
+	it("rejects initial workspace drift without switching cwd or prompting", async () => {
+		const f = await fixture(undefined, { changeCwd: true });
+		await expect(f.executor.run(task())).rejects.toThrow("fixed cwd");
+		expect(f.received.map((m) => m.type)).toEqual(["hello"]);
+	});
+
+	it("rejects Bot identity, revision, device and local configuration drift before opening a connection", async () => {
+		const f = await fixture();
+		for (const patch of [{ botId: "other" }, { botRevision: 0 }, { deviceId: "" }]) {
+			await expect(f.executor.run({ ...task(), ...patch })).rejects.toThrow("must match");
+		}
+		expect(f.received).toEqual([]);
 	});
 
 	it("is disabled by default and rejects non-loopback, credentials and non-origin URLs", async () => {
@@ -177,9 +202,9 @@ describe("device task executor", () => {
 			"http://localhost/proxy",
 			"http://localhost/#x",
 		]) {
-			expect(() => createDeviceTaskExecutor({ localOrigin, cwd })).toThrow(/localOrigin/);
+			expect(() => createDeviceTaskExecutor({ localOrigin, cwd, bot })).toThrow(/localOrigin/);
 		}
-		const executor = createDeviceTaskExecutor({ localOrigin: "http://localhost:8999", cwd });
+		const executor = createDeviceTaskExecutor({ localOrigin: "http://localhost:8999", cwd, bot });
 		await expect(executor.run(task())).rejects.toThrow("disabled");
 		executor.close();
 	});
@@ -190,7 +215,7 @@ describe("device task executor", () => {
 		const running = f.executor.run(t);
 		const rejected = expect(running).rejects.toThrow("cancelled");
 		await expect(f.executor.run(task())).rejects.toThrow("busy");
-		const other = createDeviceTaskExecutor({ localOrigin: f.origin, cwd, allowExecution: true });
+		const other = createDeviceTaskExecutor({ localOrigin: f.origin, cwd, bot, allowExecution: true });
 		await expect(other.run(task())).rejects.toThrow("busy");
 		await vi.waitFor(() => expect(f.received.some((m) => m.type === "prompt")).toBe(true));
 		f.executor.close();

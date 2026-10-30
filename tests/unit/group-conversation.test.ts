@@ -19,7 +19,8 @@ let host: HTMLDivElement;
 const localSend = vi.fn(() => true);
 const device = { id: "alpha", name: "Twin" };
 const detail = {
-	room: { id: "one", name: "Room", deviceIds: ["alpha"] },
+	room: { id: "one", name: "Room", botIds: ["alpha"] },
+	bots: [{ id: "alpha", name: "Twin", deviceId: "host", enabled: true }],
 	messages: [{ id: "m", text: "old message", createdAt: 1, sender: { name: "Human" } }],
 	tasks: [],
 };
@@ -155,21 +156,21 @@ describe("group stream lifecycle", () => {
 		await send();
 		await send();
 		expect(bodies).toHaveLength(2);
-		expect(bodies[0].targetDeviceIds).toEqual([]);
+		expect(bodies[0].targetBotIds).toEqual([]);
 		expect(bodies[0].idempotencyKey).toBe(bodies[1].idempotencyKey);
 		expect(host.querySelector("textarea")?.value).toBe("/help ordinary group chat");
 		expect(bodies[0].idempotencyKey).toMatch(/^[a-f0-9-]{36}$/);
 		await type("@Twin");
 		await send();
-		expect(bodies.at(-1).targetDeviceIds).toEqual([]);
+		expect(bodies.at(-1).targetBotIds).toEqual([]);
 		await type("@alpha");
 		await act(async () => host.querySelector<HTMLButtonElement>(".slash-item")!.click());
 		await send();
-		expect(bodies.at(-1).targetDeviceIds).toEqual(["alpha"]);
+		expect(bodies.at(-1).targetBotIds).toEqual(["alpha"]);
 		await type("nothing");
 		await type("@Twin(alpha)");
 		await send();
-		expect(bodies.at(-1).targetDeviceIds).toEqual([]);
+		expect(bodies.at(-1).targetBotIds).toEqual([]);
 		await act(async () => vi.advanceTimersByTimeAsync(500));
 		expect(localSend).not.toHaveBeenCalled();
 	});

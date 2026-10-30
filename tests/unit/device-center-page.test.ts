@@ -12,13 +12,23 @@ function fixture(origin = "https://hub.example") {
 		{ id: "device-win-11111111", name: "Work", online: true, url: "https://win.example/" },
 		{ id: "device-mac-22222222", name: "Work", online: false, url: "javascript:alert(1)" },
 	];
+	const bots = devices.map((device, i) => ({
+		id: "bot-" + (i ? "22222222" : "11111111"),
+		deviceId: device.id,
+		name: device.name,
+		description: "",
+		enabled: true,
+		revision: 1,
+		online: device.online,
+	}));
 	const rooms = [
-		{ id: "one", name: "Room one", deviceIds: devices.map((d) => d.id) },
-		{ id: "two", name: "Room two", deviceIds: [devices[1].id] },
+		{ id: "one", name: "Room one", botIds: bots.map((b) => b.id) },
+		{ id: "two", name: "Room two", botIds: [bots[1].id] },
 	];
 	const task = {
 		id: "task-one",
 		deviceId: devices[0].id,
+		botId: bots[0].id,
 		text: "Continue",
 		status: "failed",
 		report: "<img src=x onerror=alert(1)>",
@@ -27,6 +37,7 @@ function fixture(origin = "https://hub.example") {
 	const fetch = vi.fn(async (path: string, options: any) => {
 		let data: any = {};
 		if (path === "/api/me") data = { account: { id: "owner", username: "<script>bad</script>" } };
+		else if (path === "/api/bots") data = { bots };
 		else if (path === "/api/devices") data = { devices };
 		else if (path === "/api/rooms") data = { rooms };
 		else if (path.endsWith("/messages")) data = { message: {}, tasks: [] };
@@ -60,7 +71,7 @@ function fixture(origin = "https://hub.example") {
 		document
 			.getElementById("message-form")!
 			.dispatchEvent(new dom.window.Event("submit", { bubbles: true, cancelable: true }));
-	return { dom, document, fetch, click, input, submit, devices };
+	return { dom, document, fetch, click, input, submit, devices, bots };
 }
 afterEach(() => {
 	windows.splice(0).forEach((dom) => dom.window.close());
@@ -112,7 +123,7 @@ describe("standalone device Hub", () => {
 		f.submit();
 		await flush();
 		const sent = f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))!;
-		expect(JSON.parse(sent[1].body).targetDeviceIds).toEqual([f.devices[1].id, f.devices[0].id]);
+		expect(JSON.parse(sent[1].body).targetBotIds).toEqual([f.bots[1].id, f.bots[0].id]);
 		expect(sent[1]).toMatchObject({
 			credentials: "same-origin",
 			mode: "same-origin",
@@ -132,9 +143,9 @@ describe("standalone device Hub", () => {
 		expect(f.document.getElementById("send-hint")!.textContent).toContain("不派发任务");
 		f.submit();
 		await flush();
-		expect(
-			JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetDeviceIds,
-		).toEqual([]);
+		expect(JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetBotIds).toEqual(
+			[],
+		);
 	});
 	it("keeps duplicate-name IDs while tokens remain, then clears ambiguous chips when a token is removed", async () => {
 		const f = fixture();
@@ -158,9 +169,9 @@ describe("standalone device Hub", () => {
 		f.click("#suggestions button:nth-child(2)");
 		f.submit();
 		await flush();
-		expect(
-			JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetDeviceIds,
-		).toEqual([f.devices[1].id]);
+		expect(JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetBotIds).toEqual([
+			f.bots[1].id,
+		]);
 	});
 	it("does not treat an edited name prefix as the original selected token", async () => {
 		const f = fixture();
@@ -193,16 +204,16 @@ describe("standalone device Hub", () => {
 		f.input("ordinary chat");
 		f.submit();
 		await flush();
-		expect(
-			JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetDeviceIds,
-		).toEqual([]);
+		expect(JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body).targetBotIds).toEqual(
+			[],
+		);
 	});
 	it("prepares handoff without dispatch, then sends parent and repository evidence", async () => {
 		const f = fixture();
 		await flush();
 		f.click("#room-list button");
 		await flush();
-		(f.document.querySelector("#tasks select") as HTMLSelectElement).value = f.devices[1].id;
+		(f.document.querySelector("#tasks select") as HTMLSelectElement).value = f.bots[1].id;
 		f.click("#tasks button");
 		await flush();
 		expect(f.fetch.mock.calls.some(([path]) => path.endsWith("/messages"))).toBe(false);
@@ -211,7 +222,7 @@ describe("standalone device Hub", () => {
 		const sent = JSON.parse(f.fetch.mock.calls.find(([path]) => path.endsWith("/messages"))![1].body);
 		expect(sent).toMatchObject({
 			parentTaskId: "task-one",
-			targetDeviceIds: [f.devices[1].id],
+			targetBotIds: [f.bots[1].id],
 			handoff: { repository: "repo", commit: "abc", branch: "main", instructions: "Continue work" },
 		});
 	});
@@ -280,7 +291,7 @@ describe("standalone device Hub", () => {
 		expect(call[1]).toMatchObject({ method: "POST", body: "{}", mode: "same-origin" });
 		expect(f.document.querySelectorAll("#mentions .chip")).toHaveLength(0);
 		expect(f.document.getElementById("devices")!.textContent).not.toContain(f.devices[0].id);
-		expect(f.document.querySelector('#tasks option[value="' + f.devices[0].id + '"]')).toBeNull();
+		expect(f.document.querySelector('#tasks option[value="' + f.bots[0].id + '"]')).toBeNull();
 		f.input("@Wo");
 		expect(f.document.getElementById("suggestions")!.textContent).not.toContain("11111111");
 		expect(f.document.getElementById("suggestions")!.textContent).toContain("22222222");
@@ -324,7 +335,7 @@ describe("standalone device Hub", () => {
 		expect(signal.aborted).toBe(true);
 		resolve({
 			ok: true,
-			json: async () => ({ room: { id: "one", name: "STALE", deviceIds: [] }, messages: [], tasks: [] }),
+			json: async () => ({ room: { id: "one", name: "STALE", botIds: [] }, messages: [], tasks: [] }),
 		});
 		await flush();
 		expect(f.document.getElementById("room-title")!.textContent).toBe("Room two");
@@ -382,7 +393,7 @@ describe("standalone device Hub", () => {
 					ok: true,
 					status: 200,
 					json: async () => ({
-						room: { id: "one", name: "Room one", deviceIds: [] },
+						room: { id: "one", name: "Room one", botIds: [] },
 						tasks: [],
 						messages: empty
 							? []

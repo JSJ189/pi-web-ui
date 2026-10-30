@@ -147,6 +147,8 @@ import { ApprovalRulesStore } from "./approval-rules.js";
 import { ComposerDraftsStore } from "./composer-drafts.js";
 import { SandboxManager, evaluateSandboxJail, isSameOrSubpath, withSandboxJailGate } from "./sandbox-service.js";
 import { readPermissionFromSession } from "./permission-preset.js";
+import { McpBridge, getMcpToolServer } from "./mcp-bridge.js";
+import { getBotExecution, type BotExecutionCapability } from "./device-center/bot-execution.js";
 import {
 	createWorkspaceSnapshot,
 	restoreWorkspaceSnapshot,
@@ -3488,15 +3490,39 @@ export class ClientSession {
 		}
 	}
 
+	private botExecution?: BotExecutionCapability;
+	private botMcpBridge?: McpBridge;
+
+	private executionMcpBridge(cwd: string): McpBridge | undefined {
+		return this.botExecution ? this.botMcpBridge : ClientSession.mcpProjects?.getBridge(cwd);
+	}
+
+	private botToolAllowed(name: string, cwd = this.cwd): boolean {
+		const bot = this.botExecution;
+		if (!bot) return true;
+		bot.assertActive();
+		const mcp = this.executionMcpBridge(cwd)?.getTools() ?? [];
+		const matches = mcp.filter((tool) => tool.name === name);
+		if (!bot.allowsTool(name)) return false;
+		if (matches.length) return matches.length === 1 && bot.bot.mcpServers.includes(getMcpToolServer(matches[0]) ?? "");
+		return true;
+	}
+
 	static async create(
 		clientId: string,
 		cwd: string,
 		stateStore: ClientStateStore,
 		opts?: { blank?: boolean; blankTitle?: string; idleHeld?: boolean },
 	): Promise<ClientSession> {
+		const botExecution = getBotExecution(clientId);
+		botExecution?.assertActive();
+		if (botExecution) cwd = botExecution.bot.cwd;
 		const agentDir = process.env.PI_CODING_AGENT_DIR ?? getAgentDir();
 
 		const cs = new ClientSession(clientId, cwd, agentDir, stateStore);
+		cs.botExecution = botExecution;
+		botExecution?.captureModel(stateStore.getDefaultModel("pi"));
+		if (botExecution) opts = { blank: true };
 		if (!getGlobalRemoteSshService()) {
 			setGlobalRemoteSshService(new RemoteSshService(stateStore.dataDir));
 		}
@@ -3510,7 +3536,12 @@ export class ClientSession {
 		// issue #235：坏转录（重复压缩标记成环）修一次再试，否则整项目首屏
 		// "Failed to initialize session"。
 		const opened = await cs.openManagerAndRuntime(
-			() => (opts?.blank ? SessionManager.create(sessionBaseDir) : SessionManager.continueRecent(sessionBaseDir)),
+			() =>
+				botExecution
+					? SessionManager.create(sessionBaseDir, join(agentDir, "bot-sessions", clientId))
+					: opts?.blank
+						? SessionManager.create(sessionBaseDir)
+						: SessionManager.continueRecent(sessionBaseDir),
 			(m) =>
 				createAgentSessionRuntime(cs.makeRuntimeFactory(terminals, undefined, conversationId), {
 					cwd: sessionBaseDir,
@@ -3578,7 +3609,7 @@ export class ClientSession {
 			}
 		}
 		await cs.restoreProjectProviderKeysForCwd(cwd);
-		await cs.restoreProjectModelForCwd(cwd);
+		if (!botExecution) await cs.restoreProjectModelForCwd(cwd);
 
 		if (conv.session.sessionFile && cs.stateStore?.isSessionPinned(cwd, conv.session.sessionFile)) {
 			conv.pinned = true;
@@ -3586,7 +3617,7 @@ export class ClientSession {
 		}
 
 		// 恢复本项目其他已被钉住的会话（重启后常驻运行列表，issue #433）
-		const pinnedPaths = cs.stateStore?.getPinnedSessions(cwd) ?? [];
+		const pinnedPaths = botExecution ? [] : (cs.stateStore?.getPinnedSessions(cwd) ?? []);
 		const maxOpenConversations = getMaxOpenConversations();
 		for (const p of pinnedPaths) {
 			if (cs.convs.size >= maxOpenConversations) break;
@@ -3655,11 +3686,34 @@ export class ClientSession {
 		noSpawnTools?: boolean,
 	): CreateAgentSessionRuntimeFactory {
 		return async ({ cwd: effectiveCwd, sessionManager }) => {
+			this.botExecution?.assertActive();
+			const botEntry = sessionManager
+				.getEntries()
+				.find((entry) => entry.type === "custom" && entry.customType === "device-bot-execution");
+			if (botEntry && !this.botExecution)
+				throw new Error("Bot execution transcripts cannot be resumed as ordinary sessions");
+			if (this.botExecution && !botEntry)
+				sessionManager.appendCustomEntry("device-bot-execution", {
+					botId: this.botExecution.bot.id,
+					revision: this.botExecution.bot.revision,
+				});
+			if (this.botExecution && resolve(effectiveCwd) !== resolve(this.botExecution.bot.cwd))
+				throw new Error("Bot cwd is fixed");
 			const sandboxIdentity = this.sandboxes.getExecutionIdentity(effectiveCwd);
-			const releaseMcp = sandboxIdentity ? undefined : ClientSession.mcpProjects?.retain(effectiveCwd);
+			const releaseMcp =
+				sandboxIdentity || this.botExecution ? undefined : ClientSession.mcpProjects?.retain(effectiveCwd);
 			try {
-				if (!sandboxIdentity) await ClientSession.mcpProjects?.prepare(effectiveCwd);
-				const sdkBuiltins = sandboxIdentity ? [] : await getSdkBuiltinExtensionFactories();
+				if (this.botExecution) {
+					if (!this.botMcpBridge) {
+						this.botMcpBridge = new McpBridge(this.stateStore.dataDir, undefined, {
+							agentDir: this.agentDir,
+							cwd: effectiveCwd,
+							allowedServers: this.botExecution.bot.mcpServers,
+						});
+						await this.botMcpBridge.load();
+					}
+				} else if (!sandboxIdentity) await ClientSession.mcpProjects?.prepare(effectiveCwd);
+				const sdkBuiltins = sandboxIdentity || this.botExecution ? [] : await getSdkBuiltinExtensionFactories();
 				const sandboxRuntimeGate = createSandboxRuntimeGate(
 					() => this.sandboxes.getExecutionIdentity(effectiveCwd, sandboxIdentity),
 					effectiveCwd,
@@ -3679,7 +3733,7 @@ export class ClientSession {
 					// 白名单取代主会话开关（只启用这些），空白名单 = 跟随主会话。
 					resourceLoaderOptions: {
 						// Filter before import: extensionsOverride runs after arbitrary module initialization.
-						...sandboxExtensionOptions(Boolean(sandboxIdentity)),
+						...sandboxExtensionOptions(Boolean(sandboxIdentity) || Boolean(this.botExecution)),
 						// 系统提示词 base：主会话（组合模板）恒返回 undefined → SDK 走默认分支，
 						// 工具列表/Guidelines/文档指引等自动段照常拼装；SYSTEM.md 内容仅在
 						// 此处捕获（lastBaseSystemPrompt）作 {{soul}} 自动内容。子代理模板
@@ -3697,6 +3751,7 @@ export class ClientSession {
 							// 记录 SDK APPEND_SYSTEM.md base（composer {{append}} 自动内容）。
 							if (!apply) this.lastSdkAppendFiles = base.slice();
 							const out = [...base];
+							if (this.botExecution?.bot.systemPrompt) out.push(this.botExecution.bot.systemPrompt);
 							if (apply && apply.promptMode === "append" && this.templatePrompt(apply).trim()) {
 								out.push(this.templatePrompt(apply));
 							}
@@ -3762,6 +3817,7 @@ export class ClientSession {
 								workspaceRoots: this.roots,
 							});
 							const allSkills = mergeSkillCollections(res.skills, discovered);
+							if (this.botExecution) return { ...res, skills: this.botExecution.filterSkills(allSkills) };
 							if (apply && apply.enabledSkills.length > 0) {
 								const set = new Set(apply.enabledSkills);
 								return { ...res, skills: allSkills.filter((s) => set.has(s.name)) };
@@ -3806,7 +3862,17 @@ export class ClientSession {
 								name: "pi-webui-sandbox-final-gate",
 								hidden: true,
 								factory: (pi) => {
-									pi.on("tool_call", (event) => sandboxRuntimeGate.check(event));
+									pi.on("tool_call", (event) => {
+										if (this.botExecution) {
+											try {
+												if (!this.botToolAllowed(event.toolName, effectiveCwd))
+													return { block: true, reason: "Tool is not authorized for this Bot" };
+											} catch {
+												return { block: true, reason: "Bot execution authorization expired" };
+											}
+										}
+										return sandboxRuntimeGate.check(event);
+									});
 								},
 							},
 							{
@@ -3931,6 +3997,12 @@ export class ClientSession {
 				// 为全新会话（0 条消息的空白对话/新对话）提前解析目标模型并注入，
 				// 避免 SDK findInitialModel 在无 model 时回退到内置硬编码默认（如 deepseek-v4-pro）：
 				let sessionModel: Parameters<AgentSession["setModel"]>[0] | undefined = initialModel;
+				if (this.botExecution) {
+					const fixed = this.botExecution.captureModel(undefined);
+					sessionModel = services.modelRuntime.getModel(fixed.provider, fixed.modelId);
+					if (!sessionModel) throw new Error("Configured Bot model is unavailable");
+					await this.restoreKeyForModel(`${fixed.provider}/${fixed.modelId}`, effectiveCwd);
+				}
 				if (!sessionModel) {
 					const isBlank =
 						typeof sessionManager.getEntries === "function"
@@ -5236,6 +5308,18 @@ export class ClientSession {
 
 	/** 插件扩展点 v2（供 modelLister）：复用 listModels 的模型列表映射 {id,provider,vision}。
 	 *  与 listModels 唯一差别：不做网络 refresh（插件列表走缓存目录，15s 超时也不等），只读不 emit。 */
+	/** Public cached model metadata only; browsing never refreshes providers. */
+	async listLocalBotModels(): Promise<import("./protocol.js").ModelInfo[]> {
+		const available = await this.runtime.services.modelRuntime.getAvailable();
+		return available.map((m) => ({
+			id: `${m.provider}/${m.id}`,
+			name: this.cleanModelDisplayName(m.name),
+			provider: m.provider,
+			reasoning: m.reasoning,
+			vision: m.input?.includes("image") ?? false,
+		}));
+	}
+
 	async listModelsForPlugins(): Promise<{ id: string; provider: string; vision: boolean }[]> {
 		try {
 			const available = await this.runtime.services.modelRuntime.getAvailable();
@@ -8045,6 +8129,10 @@ export class ClientSession {
 		session: AgentSession,
 		model: Parameters<AgentSession["setModel"]>[0],
 	): Promise<void> {
+		if (this.botExecution) {
+			const fixed = this.botExecution.captureModel(undefined);
+			if (model.provider !== fixed.provider || model.id !== fixed.modelId) throw new Error("Bot model is fixed");
+		}
 		await session.setModel(model);
 		this.applyCompactionOverrides();
 	}
@@ -8203,6 +8291,7 @@ export class ClientSession {
 		minimalNewChat?: boolean;
 		preserveDraftAcrossConversations?: boolean;
 	}): Promise<void> {
+		if (this.botExecution) throw new Error("Bot settings are fixed");
 		const { markersEnabled, disabledMarkers, quickPhrasesSeeded, ...rest } = partial as {
 			markersEnabled?: boolean;
 			disabledMarkers?: string[];
@@ -8981,6 +9070,15 @@ export class ClientSession {
 			this.settingsSvc.current.defaultAgentPreset ??
 			"standard";
 		this.syncPluginTools(session, targetPreset);
+		if (this.botExecution) {
+			session.setActiveToolsByName(
+				session
+					.getAllTools()
+					.filter((tool) => this.botToolAllowed(tool.name))
+					.map((tool) => tool.name),
+			);
+			return;
+		}
 		const isPlanMode = conv?.planMode === true;
 		const isDelegateMode = conv?.delegateMode === true;
 		const disabled = new Set(effectiveDisabledAgentTools(this.settingsSvc.current));
@@ -9597,6 +9695,16 @@ export class ClientSession {
 		anchor?: { session?: AgentSession },
 		trustedTool = false,
 	): ToolDefinition {
+		if (this.botExecution) {
+			const execute = def.execute;
+			def = {
+				...def,
+				execute: async (...args) => {
+					if (!this.botToolAllowed(def.name, cwdOverride)) throw new Error("Tool is not authorized for this Bot");
+					return execute(...args);
+				},
+			};
+		}
 		const capturedSandbox = this.sandboxes.getExecutionIdentity(cwdOverride ?? this.cwd);
 		if (anchor) {
 			return {
@@ -9660,12 +9768,33 @@ export class ClientSession {
 		if (!presetAllowsPluginTools(preset)) return [];
 		const off = new Set(normalizeDisabledPluginTools(this.settingsSvc.current.disabledPluginTools));
 		const disabledPlugins = new Set(this.settingsSvc.current.disabledPlugins ?? []);
-		return (this.pluginToolsProvider?.(cwd) ?? [])
+		return (this.botExecution ? (this.botMcpBridge?.getTools() ?? []) : (this.pluginToolsProvider?.(cwd) ?? []))
 			.filter((t) => {
+				if (this.botExecution) {
+					const mcp = this.executionMcpBridge(cwd ?? this.cwd)?.getTools() ?? [];
+					return (
+						mcp.includes(t) &&
+						this.botToolAllowed(t.name, cwd) &&
+						!["bash", "read", "write", "edit", "powershell", "ls", "grep", "find"].includes(t.name)
+					);
+				}
 				if (t.pluginId && disabledPlugins.has(t.pluginId)) return false;
 				return !off.has(t.name);
 			})
-			.map(pluginToolToDefinition);
+			.map((tool) => {
+				const def = pluginToolToDefinition(tool);
+				if (!this.botExecution) return def;
+				const execute = def.execute;
+				return {
+					...def,
+					execute: async (...args: Parameters<typeof execute>) => {
+						const current = this.executionMcpBridge(cwd ?? this.cwd)?.getTools() ?? [];
+						if (!current.includes(tool) || !this.botToolAllowed(tool.name, cwd))
+							throw new Error("Bot MCP tool authorization expired");
+						return execute(...args);
+					},
+				};
+			});
 	}
 
 	/** 把插件 AI 工具同步进一个已存在的会话（新增/更新/移除；禁用工具同步移除）。
@@ -10016,7 +10145,16 @@ export class ClientSession {
 		// addressed by this prompt. See the naming block below — a concurrent
 		// switch/new_chat while prompt() is in flight must never target a
 		// different conversation.
+		this.botExecution?.assertActive();
+		if (this.botExecution && text.trimStart().startsWith("/")) throw new Error("Bot slash commands are disabled");
 		const conv = targetConversation ?? this.conv;
+		if (
+			!this.botExecution &&
+			conv.session.sessionManager
+				?.getEntries?.()
+				.some((entry) => entry.type === "custom" && entry.customType === "device-bot-execution")
+		)
+			throw new Error("Bot transcripts are inspection-only outside their execution capability");
 		if (targetConversation && this.convs.get(conv.id) !== conv) {
 			throw new Error("Prompt conversation is no longer available");
 		}
@@ -11875,6 +12013,7 @@ export class ClientSession {
 	async detachTakeoverConversations(
 		ids: string[],
 	): Promise<{ ok: true; payload: TakeoverPayload } | { ok: false; reason: "missing" | "empty" }> {
+		if (this.botExecution) return { ok: false, reason: "missing" };
 		const set = new Set(ids);
 		const convs = [...this.convs.values()].filter((c) => set.has(c.id));
 		if (convs.length === 0) return { ok: false, reason: "missing" };
@@ -11962,6 +12101,7 @@ export class ClientSession {
 	 *   （子代理待答问卷通过角标与快照呈现）。看门狗按剩余时间重布（已逾期的立即触发）。
 	 */
 	insertTakeoverConvs(payload: TakeoverPayload): string {
+		if (this.botExecution) throw new Error("Bot sessions cannot receive transferred conversations");
 		const remap = new Map<string, string>();
 		for (const conv of payload.convs) {
 			if (this.convs.has(conv.id)) {
@@ -14534,6 +14674,7 @@ export class ClientSession {
 	}
 
 	async setCwd(newCwd: string): Promise<void> {
+		if (this.botExecution) throw new Error("Bot cwd is fixed");
 		try {
 			const { resolve } = await import("node:path");
 			this.files.unwatchGit(); // stale repo's watcher must not fire across projects
@@ -15205,6 +15346,7 @@ export class ClientSession {
 	 *  失败时只发 notice 不抛错（UI 路径靠 notice 提示，见 cycleModel 等调用方）。
 	 *  需要「失败即拒绝」的无头路径（插件/定时任务）用 switchModelOrThrow。 */
 	async setModel(modelId: string): Promise<void> {
+		if (this.botExecution) throw new Error("Bot model is fixed");
 		try {
 			const mr = this.runtime.services.modelRuntime;
 			const slash = modelId.indexOf("/");
@@ -15363,6 +15505,8 @@ export class ClientSession {
 	}
 
 	async dispose(): Promise<void> {
+		this.botExecution?.revoke();
+		this.botMcpBridge?.dispose();
 		this.sessionSearchController?.abort();
 		this.disposed = true;
 		this.settingsSvc.dispose();

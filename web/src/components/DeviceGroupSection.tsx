@@ -6,7 +6,7 @@ import { isZhLocale, useI18n } from "../i18n";
 import { openContextMenu } from "../context-menu-state";
 import type { UiSlotEntry } from "../ui-slots";
 
-export type SidebarDeviceGroup = { id: string; name: string; deviceIds: string[] };
+export type SidebarDeviceGroup = { id: string; name: string; botIds: string[] };
 export const DEVICE_GROUPS_CHANGED = "pi-web-ui:device-groups-changed";
 const words = {
 	zh: {

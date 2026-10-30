@@ -1,24 +1,26 @@
 import type { UiMessage, UiState } from "./types";
 import type { AtHit } from "./at-mention";
 
-export type GroupDevice = { id: string; name: string; online?: boolean };
+export type GroupDevice = { id: string; name: string; deviceId?: string; enabled?: boolean; online?: boolean };
 export type GroupMessage = {
 	id: string;
 	text: string;
 	createdAt: number;
-	sender: { name: string };
-	targetDeviceIds?: string[];
+	sender: { name: string; type?: "human" | "bot" };
+	targetBotIds?: string[];
 };
 export type GroupTask = {
 	id: string;
 	deviceId: string;
+	botId: string;
 	text: string;
 	report?: string;
 	status: "queued" | "running" | "completed" | "failed" | "interrupted";
 	createdAt: number;
 };
 export type GroupDetail = {
-	room: { id: string; name: string; deviceIds: string[] };
+	room: { id: string; name: string; botIds: string[] };
+	bots: GroupDevice[];
 	messages: GroupMessage[];
 	tasks: GroupTask[];
 };
@@ -31,7 +33,7 @@ export function groupDeviceHits(devices: readonly GroupDevice[], query: string):
 		.filter((d) => `${d.name} ${d.id}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
 		.map((d) => ({
 			providerId: "host:group-devices",
-			providerLabel: "Device",
+			providerLabel: "Bot",
 			title: d.name,
 			hint: d.id,
 			text: groupDeviceToken(d),
@@ -51,7 +53,12 @@ export function groupConversationState(
 	const entries: UiMessage[] = [];
 	for (const message of detail?.messages ?? []) {
 		const id = `group-message:${message.id}`;
-		entries.push({ id, role: "user", timestamp: message.createdAt, content: [{ type: "text", text: message.text }] });
+		entries.push({
+			id,
+			role: message.sender.type === "bot" ? "assistant" : "user",
+			timestamp: message.createdAt,
+			content: [{ type: "text", text: message.text }],
+		});
 		labels.set(id, message.sender.name);
 	}
 	const statuses = zh
@@ -59,8 +66,8 @@ export function groupConversationState(
 		: { queued: "Queued", running: "Running", completed: "Completed", failed: "Failed", interrupted: "Interrupted" };
 	for (const task of detail?.tasks ?? []) {
 		const id = `group-task:${task.id}`;
-		const device = devices.find((d) => d.id === task.deviceId);
-		labels.set(id, `${device?.name ?? task.deviceId} · ${statuses[task.status]}`);
+		const device = devices.find((d) => d.id === task.botId);
+		labels.set(id, `${device?.name ?? task.botId} · ${statuses[task.status]}`);
 		entries.push({
 			id,
 			role: "assistant",
@@ -103,6 +110,6 @@ export function groupSendAttempt(
 	targets: readonly string[],
 	newKey: () => string,
 ) {
-	const fingerprint = JSON.stringify({ roomId, text, targetDeviceIds: [...targets].sort() });
+	const fingerprint = JSON.stringify({ roomId, text, targetBotIds: [...targets].sort() });
 	return previous?.fingerprint === fingerprint ? previous : { fingerprint, key: newKey() };
 }

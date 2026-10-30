@@ -14,6 +14,7 @@ import { appUrl } from "../base-url";
 import { withToken } from "../auth-token";
 import { useT } from "../i18n";
 import { DeviceGroups } from "./DeviceGroups";
+import { LocalBots } from "./LocalBots";
 import { DeviceDirectory } from "./DeviceDirectory";
 import { useDeviceGroupNavigation } from "../device-group-navigation";
 
@@ -36,7 +37,11 @@ function safeHub(value: string): string | null {
 	}
 }
 
-export function DeviceCenter() {
+export function DeviceCenter({
+	pathCompletions = [],
+}: {
+	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
+}) {
 	const t = useT();
 	const navigation = useDeviceGroupNavigation();
 	const [view, setView] = useState<"overview" | "groups" | "settings">(navigation.revision ? "groups" : "overview");
@@ -573,6 +578,12 @@ export function DeviceCenter() {
 							key={`${status.hubUrl}:${status.deviceId}`}
 							hubUrl={status.hubUrl}
 							currentDeviceId={status.deviceId}
+						/>
+					)}
+					{!localOnly && (view === "settings" || view === "groups") && (
+						<LocalBots
+							key={`${status?.hubUrl ?? ""}:${status?.deviceId ?? "unpaired"}`}
+							pathCompletions={pathCompletions}
 						/>
 					)}
 					{view === "groups" && <DeviceGroups navigation={navigation} />}

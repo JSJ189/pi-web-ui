@@ -13,8 +13,8 @@ it("tracks the selected group from navigation and clears its highlight for ordin
 			ok: true,
 			json: async () => ({
 				rooms: [
-					{ id: "one", name: "家", deviceIds: [] },
-					{ id: "two", name: "工作", deviceIds: [] },
+					{ id: "one", name: "家", botIds: [] },
+					{ id: "two", name: "工作", botIds: [] },
 				],
 			}),
 		})),

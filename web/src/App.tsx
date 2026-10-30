@@ -2887,7 +2887,7 @@ export function App() {
 					</div>
 					<div className={`view-pane ${view === "devices" ? "" : "hidden"}`}>
 						<DeferredMount active={view === "devices"}>
-							<DeviceCenter />
+							<DeviceCenter pathCompletions={chat.pathCompletions} />
 						</DeferredMount>
 					</div>
 					{pluginViews.map((entry) => {

@@ -104,17 +104,7 @@ export function safePath(path: unknown, method = "GET"): path is string {
 		if (normalized === "/api/device-center" || normalized.startsWith("/api/device-center/")) {
 			// Only account-scoped chat routes may cross a device portal.
 			if (method === "GET") {
-				if (normalized === "/api/device-center/workspaces") {
-					const query = new URL(path, "http://local").searchParams;
-					const ids = query.getAll("roomId");
-					return (
-						[...query.keys()].every((key) => key === "roomId") &&
-						ids.length === 1 &&
-						!!ids[0].trim() &&
-						ids[0].length <= 256
-					);
-				}
-				return /^\/api\/device-center\/(devices|rooms(?:\/[^/]+)?)$/.test(normalized);
+				return /^\/api\/device-center\/(devices|bots|rooms(?:\/[^/]+)?)$/.test(normalized);
 			}
 			if (method === "POST")
 				return /^\/api\/device-center\/rooms(?:\/[^/]+\/(messages|rename|members|delete))?$/.test(normalized);
@@ -451,7 +441,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 					timer: NodeJS.Timeout;
 				}
 			>;
-			tasks: Map<string, string>;
+			tasks: Map<string, { attemptId: string; botId: string }>;
 			rpc: ReturnType<typeof createCommandChannel>;
 			messages: ReturnType<typeof createWsMessageChannel>;
 		}
@@ -514,11 +504,12 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 	function drop(id: string, entry: typeof devices extends Map<string, infer T> ? T : never) {
 		entry.rpc.close();
 		entry.messages.close();
-		for (const [taskId, attemptId] of entry.tasks) {
+		for (const [taskId, { attemptId, botId }] of entry.tasks) {
 			Promise.resolve()
 				.then(() =>
 					options.onTaskEvent?.(id, {
 						taskId,
+						botId,
 						attemptId,
 						status: "interrupted",
 						report: "Device connection lost; task is not replayed",
@@ -841,7 +832,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 				const entry = {
 					ws,
 					streams: new Map(),
-					tasks: new Map<string, string>(),
+					tasks: new Map<string, { attemptId: string; botId: string }>(),
 					rpc: createCommandChannel(ws),
 					messages: createWsMessageChannel(ws),
 				};
@@ -856,7 +847,9 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 						if (frame.type === "task_event") {
 							if (
 								typeof frame.taskId !== "string" ||
-								entry.tasks.get(frame.taskId) !== frame.attemptId ||
+								typeof frame.botId !== "string" ||
+								entry.tasks.get(frame.taskId)?.attemptId !== frame.attemptId ||
+								entry.tasks.get(frame.taskId)?.botId !== frame.botId ||
 								!["running", "completed", "failed"].includes(String(frame.status))
 							)
 								throw new Error("Unknown task");
@@ -961,11 +954,16 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 				!entry ||
 				typeof task?.id !== "string" ||
 				typeof task.attemptId !== "string" ||
+				typeof task.botId !== "string" ||
+				!task.botId ||
+				task.deviceId !== id ||
+				!Number.isSafeInteger(task.botRevision) ||
+				task.botRevision < 1 ||
 				entry.tasks.has(task.id) ||
 				entry.tasks.size >= RELAY_LIMITS.streams
 			)
 				return false;
-			entry.tasks.set(task.id, task.attemptId);
+			entry.tasks.set(task.id, { attemptId: task.attemptId, botId: task.botId });
 			if (!sendFrame(entry.ws, { type: "task", task })) {
 				entry.tasks.delete(task.id);
 				return false;

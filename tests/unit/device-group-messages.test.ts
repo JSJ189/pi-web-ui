@@ -20,11 +20,20 @@ describe("group conversation adapter", () => {
 		const { state, labels } = groupConversationState(
 			"room",
 			{
-				room: { id: "room", name: "Room", deviceIds: ["a"] },
+				room: { id: "room", name: "Room", botIds: ["a"] },
+				bots: devices,
 				messages: [{ id: "m", text: "hi", createdAt: 1, sender: { name: "Human" } }],
 				tasks: [
-					{ id: "t", deviceId: "a", text: "work", createdAt: 2, status: "completed", report: "**done**" },
-					{ id: "q", deviceId: "b", text: "next", createdAt: 3, status: "queued" },
+					{
+						id: "t",
+						deviceId: "host",
+						botId: "a",
+						text: "work",
+						createdAt: 2,
+						status: "completed",
+						report: "**done**",
+					},
+					{ id: "q", deviceId: "host", botId: "b", text: "next", createdAt: 3, status: "queued" },
 				],
 			},
 			devices,

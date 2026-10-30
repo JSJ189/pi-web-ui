@@ -156,9 +156,26 @@ describe("device reverse relay", () => {
 		cleanup.push(() => connector.close());
 		await vi.waitFor(() => expect(relay.isOnline("dev1")).toBe(true));
 		expect(await relay.callDevice("dev1", "transfer_preview", {})).toEqual({ files: ["result.txt"] });
-		expect(relay.sendTask("dev1", { id: "task", attemptId: "attempt", text: "run" })).toBe(true);
+		expect(
+			relay.sendTask("dev1", {
+				id: "task",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "attempt",
+				text: "run",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
-			expect(events).toHaveBeenCalledWith("dev1", expect.objectContaining({ status: "completed" })),
+			expect(events).toHaveBeenCalledWith(
+				"dev1",
+				expect.objectContaining({
+					taskId: "task",
+					botId: "bot-a",
+					attemptId: "attempt",
+					status: "completed",
+				}),
+			),
 		);
 		const opened = await request(port, `127.0.0.1:${port}`, "/api/devices/dev1/open", { origin: publicUrl }, "POST");
 		expect(opened.status).toBe(409);
@@ -235,16 +252,50 @@ describe("device reverse relay", () => {
 	}, 15_000);
 	it("accepts fresh tasks after a transient disconnect on the same connector", async () => {
 		const f = await fixture();
-		expect(f.relay.sendTask("dev1", { id: "before", attemptId: "a", text: "before" })).toBe(true);
+		expect(
+			f.relay.sendTask("dev1", {
+				id: "before",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "a",
+				text: "before",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
-			expect(f.events).toHaveBeenCalledWith("dev1", expect.objectContaining({ taskId: "before", status: "completed" })),
+			expect(f.events).toHaveBeenCalledWith(
+				"dev1",
+				expect.objectContaining({
+					taskId: "before",
+					botId: "bot-a",
+					attemptId: "a",
+					status: "completed",
+				}),
+			),
 		);
 		f.relay.revoke("dev1");
 		await vi.waitFor(() => expect(f.connector.isOnline()).toBe(false));
 		await vi.waitFor(() => expect(f.relay.isOnline("dev1")).toBe(true), { timeout: 4000 });
-		expect(f.relay.sendTask("dev1", { id: "after", attemptId: "b", text: "after" })).toBe(true);
+		expect(
+			f.relay.sendTask("dev1", {
+				id: "after",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "b",
+				text: "after",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
-			expect(f.events).toHaveBeenCalledWith("dev1", expect.objectContaining({ taskId: "after", status: "completed" })),
+			expect(f.events).toHaveBeenCalledWith(
+				"dev1",
+				expect.objectContaining({
+					taskId: "after",
+					botId: "bot-a",
+					attemptId: "b",
+					status: "completed",
+				}),
+			),
 		);
 	});
 	it("chunks large commands, rejects missing handlers and propagates cancellation", async () => {
@@ -312,18 +363,89 @@ describe("device reverse relay", () => {
 		});
 		cleanup.push(() => next.close());
 		await vi.waitFor(() => expect(next.isOnline()).toBe(true));
-		expect(f.relay.sendTask("dev1", { id: "pending", attemptId: "attempt", text: "run" })).toBe(true);
+		expect(
+			f.relay.sendTask("dev1", {
+				id: "pending",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "attempt",
+				text: "run",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
-			expect(f.events).toHaveBeenCalledWith("dev1", expect.objectContaining({ status: "running" })),
+			expect(f.events).toHaveBeenCalledWith(
+				"dev1",
+				expect.objectContaining({
+					taskId: "pending",
+					botId: "bot-a",
+					attemptId: "attempt",
+					status: "running",
+				}),
+			),
 		);
 		f.relay.revoke("dev1");
 		await vi.waitFor(() => expect(aborted).toBe(true));
 		expect(onDisconnect).toHaveBeenCalled();
 		expect(f.events).toHaveBeenCalledWith(
 			"dev1",
-			expect.objectContaining({ taskId: "pending", attemptId: "attempt", status: "interrupted" }),
+			expect.objectContaining({
+				taskId: "pending",
+				botId: "bot-a",
+				attemptId: "attempt",
+				status: "interrupted",
+			}),
 		);
 	});
+	it.each([undefined, "bot-other"])(
+		"rejects task receipts with botId %s and preserves the assigned Bot on interruption",
+		async (botId) => {
+			const f = await fixture();
+			f.connector.close();
+			await vi.waitFor(() => expect(f.relay.isOnline("dev1")).toBe(false));
+			const device = new WebSocket(`ws://127.0.0.1:${f.port}/device-connect?deviceId=dev1`, {
+				headers: { authorization: "Bearer credential" },
+			});
+			cleanup.push(() => device.terminate());
+			await once(device, "open");
+			const task = {
+				id: "receipt",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "attempt",
+				text: "run",
+			};
+			const dispatched = once(device, "message");
+			expect(f.relay.sendTask("dev1", task)).toBe(true);
+			expect(JSON.parse((await dispatched)[0].toString())).toEqual({ type: "task", task });
+			const disconnected = once(device, "close");
+			device.send(
+				JSON.stringify({
+					type: "task_event",
+					taskId: task.id,
+					attemptId: task.attemptId,
+					botId,
+					status: "completed",
+					report: "spoofed",
+				}),
+			);
+			await disconnected;
+			await vi.waitFor(() => expect(f.relay.isOnline("dev1")).toBe(false));
+			await vi.waitFor(() =>
+				expect(f.events).toHaveBeenCalledWith(
+					"dev1",
+					expect.objectContaining({
+						taskId: task.id,
+						botId: task.botId,
+						attemptId: task.attemptId,
+						status: "interrupted",
+					}),
+				),
+			);
+			expect(f.events).toHaveBeenCalledTimes(1);
+		},
+	);
 	it("replaces a device connection without stale close losing its successor", async () => {
 		const f = await fixture();
 		const next = createDeviceConnector({
@@ -375,14 +497,19 @@ describe("device reverse relay", () => {
 			])
 				expect(safePath(path, method), `${method} ${path}`).toBe(false);
 		}
-		expect(safePath("/api/device-center/workspaces?roomId=member", "GET")).toBe(true);
-		for (const path of [
-			"/api/device-center/workspaces?roomId=",
-			"/api/device-center/workspaces?roomId=a&roomId=b",
-			"/api/device-center/workspaces?roomId=a&extra=1",
-		])
-			expect(safePath(path, "GET")).toBe(false);
-		expect(safePath("/api/device-center/workspaces?roomId=member", "POST")).toBe(false);
+		for (const path of ["/api/device-center/bots", "/api/device-center/bots?roomId=member"])
+			expect(safePath(path, "GET"), path).toBe(true);
+		for (const method of ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "WS"]) {
+			for (const path of [
+				"/api/device-center/local-bots",
+				"/api/device-center/local-bots?roomId=member",
+				"/api/device-center/local-bots/bot-a",
+				"/api/device-center/bots/bot-a",
+				"/api/device-center/workspaces?roomId=member",
+			])
+				expect(safePath(path, method), `${method} ${path}`).toBe(false);
+			if (method !== "GET") expect(safePath("/api/device-center/bots", method), method).toBe(false);
+		}
 		expect(safePath("/api/device-center/rooms", "WS")).toBe(false);
 		expect(safePath("/api/device-center/rooms/team/messages", "GET")).toBe(false);
 		expect(checkedUrl("http://82.156.246.55:8790").origin).toBe("http://82.156.246.55:8790");
@@ -454,19 +581,45 @@ describe("device reverse relay", () => {
 		const [bytes, isBinary] = await binary;
 		expect(isBinary).toBe(true);
 		expect(bytes).toEqual(Buffer.from([0, 1, 255]));
-		expect(f.relay.sendTask("dev1", { id: "task", attemptId: "attempt", text: "test" })).toBe(true);
+		expect(
+			f.relay.sendTask("dev1", {
+				id: "task",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "attempt",
+				text: "test",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
 			expect(f.events).toHaveBeenCalledWith(
 				"dev1",
-				expect.objectContaining({ taskId: "task", attemptId: "attempt", status: "completed", report: "done" }),
+				expect.objectContaining({
+					taskId: "task",
+					botId: "bot-a",
+					attemptId: "attempt",
+					status: "completed",
+					report: "done",
+				}),
 			),
 		);
-		expect(f.relay.sendTask("dev1", { id: "failed", attemptId: "attempt2", text: "fail" })).toBe(true);
+		expect(
+			f.relay.sendTask("dev1", {
+				id: "failed",
+				botId: "bot-a",
+				deviceId: "dev1",
+				botRevision: 1,
+				attemptId: "attempt2",
+				text: "fail",
+			}),
+		).toBe(true);
 		await vi.waitFor(() =>
 			expect(f.events).toHaveBeenCalledWith(
 				"dev1",
 				expect.objectContaining({
 					taskId: "failed",
+					botId: "bot-a",
+					attemptId: "attempt2",
 					status: "failed",
 					report: expect.stringContaining("Device task failed"),
 				}),

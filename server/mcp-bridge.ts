@@ -1029,9 +1029,15 @@ function sameMcpSpec(a: McpServerSpec, b: McpServerSpec): boolean {
  * 整个 MCP 管理器的工具适配：把每个 MCP 工具变成 PluginAgentTool。
  * getAllToolsTool(name, callFn) 生成 execute → 转发到对应 McpClient.call。
  */
+const mcpToolServers = new WeakMap<object, string>();
+/** Trusted provenance keyed by the bridge-owned tool object, never by its label. */
+export function getMcpToolServer(tool: object): string | undefined {
+	return mcpToolServers.get(tool);
+}
+
 function adaptMcpTool(serverName: string, mcpTool: McpToolDefinition, client: McpClient): PluginAgentTool {
 	const name = sanitizeToolName(mcpTool.name);
-	return {
+	const adapted: PluginAgentTool = {
 		name,
 		label: `${serverName} · ${mcpTool.name}`,
 		description: mcpTool.description ?? `Tool ${mcpTool.name} provided by MCP server "${serverName}"`,
@@ -1044,6 +1050,8 @@ function adaptMcpTool(serverName: string, mcpTool: McpToolDefinition, client: Mc
 			return client.call(mcpTool.name, params ?? {}, undefined, signal);
 		},
 	};
+	mcpToolServers.set(adapted, serverName);
+	return adapted;
 }
 
 /** 从 MCP 工具 description 提取首句做 promptSnippet（≤100 字符）；空描述返回 undefined。 */
@@ -1085,6 +1093,7 @@ export interface McpClientOptions {
 export interface McpBridgeOptions {
 	agentDir?: string;
 	cwd?: string;
+	allowedServers?: readonly string[];
 	specOverride?: { name: string; spec: McpServerSpec }[];
 	onToolsChanged?: () => void;
 }
@@ -1151,7 +1160,7 @@ export class McpBridge {
 	async load(): Promise<void> {
 		if (this.disposed) return;
 		this.serverErrors.clear();
-		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
+		const cfg = this.executionConfig();
 		await Promise.all(
 			Object.entries(cfg.servers).map(async ([name, spec]) => {
 				if (spec.enabled === false) return;
@@ -1222,7 +1231,7 @@ export class McpBridge {
 
 	private async reloadOnce(): Promise<McpReloadSummary> {
 		if (this.disposed) return { kept: 0, started: 0, stopped: 0, failed: 0, servers: 0, tools: 0 };
-		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
+		const cfg = this.executionConfig();
 		const next = new Map<string, McpClient>();
 		let kept = 0;
 		for (const client of this.clients) {
@@ -1273,6 +1282,15 @@ export class McpBridge {
 			servers: this.clients.length,
 			tools: this.tools.length,
 		};
+	}
+
+	private executionConfig() {
+		const cfg = optsOverrideOrRead(this.opts, this.dataDir);
+		if (this.opts.allowedServers)
+			cfg.servers = Object.fromEntries(
+				Object.entries(cfg.servers).filter(([name]) => this.opts.allowedServers!.includes(name)),
+			);
+		return cfg;
 	}
 
 	getTools(): PluginAgentTool[] {

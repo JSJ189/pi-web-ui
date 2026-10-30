@@ -35,6 +35,9 @@ export interface UniversalPathPickerProps {
 	placeholder?: string;
 	inputId?: string;
 	disabled?: boolean;
+	/** Apply typed paths on blur/Enter; menu and browser selections still apply immediately. */
+	commitOnBlur?: boolean;
+	localOnly?: boolean;
 	onPickerOpenChange?: (open: boolean) => void;
 }
 
@@ -52,9 +55,13 @@ export function UniversalPathPicker({
 	placeholder = "如 . 或 web 或绝对路径",
 	inputId,
 	disabled = false,
+	commitOnBlur = false,
+	localOnly = false,
 	onPickerOpenChange,
 }: UniversalPathPickerProps) {
 	const [menuOpen, setMenuOpen] = useState(false);
+	const [typedCwd, setTypedCwd] = useState(cwd);
+	useEffect(() => setTypedCwd(cwd), [cwd]);
 	const [pickerOpen, setPickerOpen] = useState(false);
 	const wrapRef = useRef<HTMLDivElement>(null);
 	const t = useT();
@@ -107,10 +114,19 @@ export function UniversalPathPicker({
 				<input
 					type="text"
 					className="universal-path-input"
-					value={cwd}
+					value={commitOnBlur ? typedCwd : cwd}
 					id={inputId}
 					disabled={disabled}
-					onChange={(e) => onSelectCwd(e.target.value)}
+					onChange={(e) => (commitOnBlur ? setTypedCwd(e.target.value) : onSelectCwd(e.target.value))}
+					onBlur={() => {
+						if (commitOnBlur && typedCwd !== cwd) onSelectCwd(typedCwd);
+					}}
+					onKeyDown={(event) => {
+						if (commitOnBlur && event.key === "Enter") {
+							event.preventDefault();
+							if (typedCwd !== cwd) onSelectCwd(typedCwd);
+						}
+					}}
 					placeholder={placeholder}
 					title={`工作目录: ${cwd || "."}`}
 				/>
@@ -206,6 +222,7 @@ export function UniversalPathPicker({
 			{/* 自带弹窗：未外接 onOpenProjectPicker 时挂载，创建走内置回退或 onCreateProject */}
 			{!onOpenProjectPicker && pickerOpen && (
 				<ProjectPicker
+					localOnly={localOnly}
 					open
 					currentCwd={pickerCwd}
 					pathCompletions={pathCompletions}

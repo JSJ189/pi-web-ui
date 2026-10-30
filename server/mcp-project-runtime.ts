@@ -89,6 +89,11 @@ export class McpProjectRuntimeRegistry {
 		}
 	}
 
+	/** Read an already active bridge without creating a runtime or starting processes. */
+	peekBridge(cwd: string): McpBridge | undefined {
+		return this.projects.get(this.key(cwd))?.bridge as McpBridge | undefined;
+	}
+
 	private key(cwd: string): string {
 		const path = resolve(cwd);
 		return process.platform === "win32" ? path.toLowerCase() : path;

@@ -3,7 +3,7 @@ import { Type, type Static } from "typebox";
 import { DEVICE_COLLAB_TOOL_NAME } from "../tool-manager.js";
 
 export const DEVICE_COLLAB_ACTIONS = [
-	"list_devices",
+	"list_bots",
 	"list_rooms",
 	"create_room",
 	"send_message",
@@ -18,7 +18,8 @@ const parameters = Type.Object(
 	{
 		action: Type.Unsafe<DeviceCollabAction>({ type: "string", enum: [...DEVICE_COLLAB_ACTIONS] }),
 		roomId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-		targetDeviceId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+		sourceBotId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+		targetBotId: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
 		name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
 		message: Type.Optional(Type.String({ minLength: 1, maxLength: 16000 })),
 		prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 16000 })),
@@ -62,18 +63,18 @@ export function setDeviceCollabService(value: DeviceCollabService | undefined): 
 }
 
 const allowed: Record<DeviceCollabAction, string[]> = {
-	list_devices: [],
+	list_bots: [],
 	list_rooms: [],
-	create_room: ["name", "targetDeviceId"],
-	send_message: ["roomId", "message"],
-	send_task: ["roomId", "targetDeviceId", "prompt", "parentTaskId"],
-	sync_files: ["roomId", "targetDeviceId", "paths"],
-	transfer_preview: ["roomId", "targetDeviceId", "transferId"],
-	transfer_apply: ["roomId", "targetDeviceId", "transferId", "revision", "overwritePaths"],
+	create_room: ["name", "sourceBotId", "targetBotId"],
+	send_message: ["roomId", "sourceBotId", "message"],
+	send_task: ["roomId", "sourceBotId", "targetBotId", "prompt", "parentTaskId"],
+	sync_files: ["roomId", "sourceBotId", "targetBotId", "paths"],
+	transfer_preview: ["roomId", "sourceBotId", "targetBotId", "transferId"],
+	transfer_apply: ["roomId", "sourceBotId", "targetBotId", "transferId", "revision", "overwritePaths"],
 };
 const required: Record<DeviceCollabAction, string[]> = {
 	...allowed,
-	send_task: ["roomId", "targetDeviceId", "prompt"],
+	send_task: ["roomId", "sourceBotId", "targetBotId", "prompt"],
 };
 function validate(input: DeviceCollabInput): void {
 	if (!input || !Object.hasOwn(allowed, input.action)) throw new Error("Invalid device_collab action.");
@@ -113,20 +114,27 @@ const summaryKeys = new Set([
 	"id",
 	"deviceId",
 	"roomId",
-	"targetDeviceId",
+	"botId",
+	"sourceBotId",
+	"targetBotId",
+	"botIds",
+	"targetBotIds",
+	"enabled",
+	"description",
 	"transferId",
 	"taskId",
 	"messageId",
 	"revision",
 	"status",
 	"online",
+	"local",
 	"ok",
 	"count",
 	"total",
 	"size",
 	"bytes",
 	"truncated",
-	"devices",
+	"bots",
 	"rooms",
 	"tasks",
 	"files",
@@ -159,12 +167,12 @@ function summarize(value: unknown, depth = 0): unknown {
 export function makeDeviceCollabTool() {
 	return defineTool({
 		name: DEVICE_COLLAB_TOOL_NAME,
-		label: "Device collaboration",
+		label: "Bot collaboration",
 		description:
-			"List devices and rooms, create rooms, send messages or explicit tasks, and preview or apply file transfers through the locally bound device service. Uses the current account and project; accepts no endpoints, credentials, or arbitrary roots. Returns bounded summaries.",
-		promptSnippet: "coordinate tasks and project files across your bound devices",
+			"List bots and rooms, create rooms, send messages or explicit tasks, and preview or apply project file transfers. Actions use a local source bot bound to the current project. Accepts no endpoints, credentials, or arbitrary roots. Returns bounded summaries.",
+		promptSnippet: "coordinate tasks and project files with group bots",
 		promptGuidelines: [
-			"List devices and rooms before selecting targets; send tasks only to an explicit targetDeviceId in a roomId.",
+			"List bots and rooms first; select a local sourceBotId and explicit targetBotId for group tasks.",
 			"Use project-relative paths; preview a transfer before applying its revision and explicitly selected overwritePaths.",
 		],
 		parameters,

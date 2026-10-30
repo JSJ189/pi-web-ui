@@ -83,11 +83,31 @@ describe("device collaboration full wiring", () => {
 			}
 			const sourceDevice = await pair("source");
 			const targetDevice = await pair("target");
+			async function syncBot(device: { deviceId: string; credential: string }, id: string) {
+				const response = await fetch(origin + "/api/agent/bots", {
+					method: "PUT",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: "Bearer " + device.credential,
+						"X-Device-Id": device.deviceId,
+					},
+					body: JSON.stringify({ bots: [{ id, name: id, description: "", enabled: true, revision: 1 }] }),
+				});
+				expect(response.status).toBe(200);
+			}
+			await syncBot(sourceDevice, "source-bot");
+			await syncBot(targetDevice, "target-bot");
+			const botsResponse = await fetch(origin + "/api/bots", { headers: { Cookie: cookie } });
+			expect(botsResponse.status).toBe(200);
+			const botListing = await botsResponse.json();
+			expect(botListing.bots.map((bot: { id: string }) => bot.id).sort()).toEqual(["source-bot", "target-bot"]);
+			expect(JSON.stringify(botListing)).not.toContain(sourceDevice.credential);
+			expect(JSON.stringify(botListing)).not.toContain(targetDevice.credential);
 			const sourceCredential = sourceDevice.credential;
 			const targetCredential = targetDevice.credential;
 			const roomResponse = await browser("/api/rooms", {
 				name: "Transfer",
-				deviceIds: [sourceDevice.deviceId, targetDevice.deviceId],
+				botIds: ["source-bot", "target-bot"],
 			});
 			expect(roomResponse.status).toBe(201);
 			const roomId = (await roomResponse.json()).room.id;
@@ -101,6 +121,7 @@ describe("device collaboration full wiring", () => {
 				credential: targetCredential,
 				localOrigin: "http://127.0.0.1:1",
 				onTask: async (task, signal) => {
+					expect(task).toMatchObject({ botId: "target-bot", deviceId: targetDevice.deviceId, botRevision: 1 });
 					receivedTasks.push(task.id);
 					if (task.text === "Review transferred code") {
 						expect(await readFile(join(targetRoot, "answer.ts"), "utf8")).toContain("export const answer = 42;");
@@ -115,6 +136,7 @@ describe("device collaboration full wiring", () => {
 				},
 				onCommand: async (action, payload, signal) => {
 					actions.push(action);
+					expect(payload).toMatchObject({ roomId, sourceBotId: "source-bot", targetBotId: "target-bot" });
 					const command = payload as {
 						bundle?: unknown;
 						transferId: string;
@@ -151,7 +173,7 @@ describe("device collaboration full wiring", () => {
 						Authorization: `Bearer ${credential}`,
 						"X-Device-Id": sourceDevice.deviceId,
 					},
-					body: JSON.stringify({ roomId, targetDeviceId: targetDevice.deviceId, ...body }),
+					body: JSON.stringify({ roomId, sourceBotId: "source-bot", targetBotId: "target-bot", ...body }),
 				});
 			}
 			expect((await transfer({ action: "stage", bundle }, "invalid")).status).toBe(401);
@@ -195,7 +217,7 @@ describe("device collaboration full wiring", () => {
 			async function dispatch(text: string, key: string) {
 				const response = await browser(`/api/rooms/${roomId}/messages`, {
 					text,
-					targetDeviceIds: [targetDevice.deviceId],
+					targetBotIds: ["target-bot"],
 					idempotencyKey: key,
 				});
 				expect(response.status).toBe(200);
@@ -220,13 +242,14 @@ describe("device collaboration full wiring", () => {
 			const completed = await waitForTask(completedId, "completed");
 			expect(completed.tasks.find((task: { id: string }) => task.id === completedId)).toMatchObject({
 				report,
+				botId: "target-bot",
 				deviceId: targetDevice.deviceId,
 			});
 			expect(completed.messages).toEqual(
 				expect.arrayContaining([
 					expect.objectContaining({
 						text: report,
-						sender: expect.objectContaining({ type: "device", id: targetDevice.deviceId }),
+						sender: expect.objectContaining({ type: "bot", id: "target-bot" }),
 						taskIds: [completedId],
 					}),
 				]),

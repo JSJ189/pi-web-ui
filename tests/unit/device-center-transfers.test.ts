@@ -21,7 +21,25 @@ async function fixture() {
 		s.accounts.push({ id: "a", username: "a", passwordHash: "hash", createdAt: 1 });
 		for (const id of ["source", "target", "other"])
 			s.devices.push({ id, accountId: "a", name: id, credentialHash: "hash", createdAt: 1 });
-		s.rooms.push({ id: "room", accountId: "a", name: "r", deviceIds: ["source", "target", "other"], createdAt: 1 });
+		for (const [id, deviceId] of [
+			["source-bot", "source"],
+			["source-sibling", "source"],
+			["target-bot", "target"],
+			["target-sibling", "target"],
+			["other-bot", "other"],
+		])
+			s.bots.push({
+				id,
+				deviceId,
+				accountId: "a",
+				name: id,
+				description: "",
+				enabled: true,
+				revision: 1,
+				createdAt: 1,
+				updatedAt: 1,
+			});
+		s.rooms.push({ id: "room", accountId: "a", name: "r", botIds: s.bots.map((b) => b.id), createdAt: 1 });
 	});
 	let caller = "source";
 	const relay = {
@@ -60,7 +78,7 @@ async function fixture() {
 			fetch(`http://127.0.0.1:${address.port}/api/agent/transfers`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
-				body: JSON.stringify({ roomId: "room", targetDeviceId: "target", ...body }),
+				body: JSON.stringify({ roomId: "room", sourceBotId: "source-bot", targetBotId: "target-bot", ...body }),
 			});
 	}
 	return {
@@ -90,7 +108,7 @@ describe("device transfer receipts", () => {
 		expect((await restored({ action: "preview", transferId: result.transferId })).status).toBe(403);
 		f.caller("source");
 		await f.store.transact((s) => {
-			s.rooms[0].deviceIds = ["source"];
+			s.rooms[0].botIds = ["source-bot"];
 		});
 		expect((await restored({ action: "preview", transferId: result.transferId })).status).toBe(403);
 	});
@@ -112,7 +130,7 @@ describe("device transfer receipts", () => {
 		const post = await f.start();
 		f.relay.callDevice.mockImplementationOnce(async () => {
 			await f.store.transact((s) => {
-				s.rooms[0].deviceIds = ["source"];
+				s.rooms[0].botIds = ["source-bot"];
 			});
 			return { id: "local", revision: "rev", applied: [] };
 		});
@@ -120,6 +138,26 @@ describe("device transfer receipts", () => {
 		const args = f.relay.callDevice.mock.calls[0] as unknown as [string, string, unknown, { signal: AbortSignal }];
 		expect(args[3].signal).toBeInstanceOf(AbortSignal);
 		await expect(readFile(join(f.dir, "device-transfers.json"))).rejects.toMatchObject({ code: "ENOENT" });
+	});
+	it("binds receipts to exact Bots, including siblings sharing a device", async () => {
+		const f = await fixture();
+		const post = await f.start();
+		expect((await post({ action: "stage", sourceBotId: "other-bot", bundle: {} })).status).toBe(403);
+		expect(f.relay.callDevice).not.toHaveBeenCalled();
+		const { transferId } = await (await post({ action: "stage", bundle: {} })).json();
+		for (const identity of [{ sourceBotId: "source-sibling" }, { targetBotId: "target-sibling" }]) {
+			expect((await post({ action: "preview", transferId, ...identity })).status).toBe(403);
+			expect(
+				(await post({ action: "apply", transferId, revision: "rev", overwritePaths: [], ...identity })).status,
+			).toBe(403);
+		}
+		expect(f.relay.callDevice).toHaveBeenCalledTimes(1);
+		expect((await post({ action: "preview", transferId })).status).toBe(200);
+		await f.store.transact((s) => {
+			s.bots.find((b) => b.id === "target-bot")!.revision++;
+		});
+		expect((await post({ action: "preview", transferId })).status).toBe(403);
+		expect(f.relay.callDevice).toHaveBeenCalledTimes(2);
 	});
 	it("rejects expired and foreign-room receipts", async () => {
 		const f = await fixture();
@@ -152,12 +190,16 @@ describe("device collaboration service", () => {
 		const signal = new AbortController().signal;
 		await service.execute(
 			"send_task",
-			{ roomId: "room", targetDeviceId: "target", prompt: "work", parentTaskId: "forged" },
+			{ roomId: "room", sourceBotId: "source-bot", targetBotId: "target-bot", prompt: "work", parentTaskId: "forged" },
 			signal,
 			{ cwd: process.cwd(), sessionId: "s" },
 		);
 		const init = request.mock.calls[0][1]!;
-		expect(JSON.parse(init.body as string)).toMatchObject({ parentTaskId: "trusted", targetDeviceIds: ["target"] });
+		expect(JSON.parse(init.body as string)).toMatchObject({
+			parentTaskId: "trusted",
+			sourceBotId: "source-bot",
+			targetBotIds: ["target-bot"],
+		});
 		expect(String(request.mock.calls[0][0])).toContain("/api/agent/rooms/room/messages");
 		expect(init.signal).toBe(signal);
 		expect(init.redirect).toBe("error");
@@ -194,7 +236,7 @@ describe("device collaboration service", () => {
 			}),
 			fetch: request,
 		});
-		const args = { roomId: "room", targetDeviceId: "target", paths: ["x"] };
+		const args = { roomId: "room", sourceBotId: "source-bot", targetBotId: "target-bot", paths: ["x"] };
 		await expect(service.execute("sync_files", args, undefined, { cwd: process.cwd() })).rejects.toThrow();
 		expect(prepare).not.toHaveBeenCalled();
 		enabled = true;

@@ -17,26 +17,42 @@ afterEach(() => setDeviceCollabService(undefined));
 
 describe("device_collab", () => {
 	it("fails clearly without a bound service", async () => {
-		await expect(invoke({ action: "list_devices" })).rejects.toThrow("not bound");
+		await expect(invoke({ action: "list_bots" })).rejects.toThrow("not bound");
 	});
 	it.each([
-		{ action: "list_devices" },
+		{ action: "list_bots" },
 		{ action: "list_rooms" },
-		{ action: "create_room", name: "Build", targetDeviceId: "d" },
-		{ action: "send_message", roomId: "r", message: "hello" },
-		{ action: "send_task", roomId: "r", targetDeviceId: "d", prompt: "Run checks" },
-		{ action: "send_task", roomId: "r", targetDeviceId: "d", prompt: "Run checks", parentTaskId: "parent" },
-		{ action: "sync_files", roomId: "r", targetDeviceId: "d", paths: ["src/app.ts"] },
-		{ action: "transfer_preview", roomId: "r", targetDeviceId: "d", transferId: "t" },
+		{ action: "create_room", name: "Build", sourceBotId: "local", targetBotId: "d" },
+		{ action: "send_message", roomId: "r", sourceBotId: "local", message: "hello" },
+		{ action: "send_task", roomId: "r", sourceBotId: "local", targetBotId: "d", prompt: "Run checks" },
+		{
+			action: "send_task",
+			roomId: "r",
+			sourceBotId: "local",
+			targetBotId: "d",
+			prompt: "Run checks",
+			parentTaskId: "parent",
+		},
+		{ action: "sync_files", roomId: "r", sourceBotId: "local", targetBotId: "d", paths: ["src/app.ts"] },
+		{ action: "transfer_preview", roomId: "r", sourceBotId: "local", targetBotId: "d", transferId: "t" },
 		{
 			action: "transfer_apply",
 			roomId: "r",
-			targetDeviceId: "d",
+			sourceBotId: "local",
+			targetBotId: "d",
 			transferId: "t",
 			revision: "v",
 			overwritePaths: ["src/app.ts"],
 		},
-		{ action: "transfer_apply", roomId: "r", targetDeviceId: "d", transferId: "t", revision: "v", overwritePaths: [] },
+		{
+			action: "transfer_apply",
+			roomId: "r",
+			sourceBotId: "local",
+			targetBotId: "d",
+			transferId: "t",
+			revision: "v",
+			overwritePaths: [],
+		},
 	])("routes $action with stable context and cancellation", async (input) => {
 		const execute = vi.fn().mockResolvedValue({ status: "ok" });
 		setDeviceCollabService({ execute });
@@ -46,13 +62,13 @@ describe("device_collab", () => {
 		expect(execute).toHaveBeenCalledWith(action, args, controller.signal, { cwd: "/project", sessionId: "session-a" });
 	});
 	it.each([
-		{ action: "list_devices", hubUrl: "https://evil.test" },
-		{ action: "list_devices", token: "secret" },
-		{ action: "list_devices", accountId: "other" },
-		{ action: "list_devices", root: "/elsewhere" },
+		{ action: "list_bots", hubUrl: "https://evil.test" },
+		{ action: "list_bots", token: "secret" },
+		{ action: "list_bots", accountId: "other" },
+		{ action: "list_bots", root: "/elsewhere" },
 		{ action: "send_task", roomId: "r", prompt: "run" },
 		{ action: "transfer_apply", transferId: "t" },
-		{ action: "transfer_apply", roomId: "r", targetDeviceId: "d", transferId: "t", revision: "v" },
+		{ action: "transfer_apply", roomId: "r", sourceBotId: "local", targetBotId: "d", transferId: "t", revision: "v" },
 		{ action: "create_room", name: "Build" },
 		{ action: "unknown" },
 	])("rejects unsafe or incomplete input %#", async (input) => {
@@ -66,12 +82,15 @@ describe("device_collab", () => {
 		async (path) => {
 			const execute = vi.fn();
 			setDeviceCollabService({ execute });
-			await expect(invoke({ action: "sync_files", roomId: "r", targetDeviceId: "d", paths: [path] })).rejects.toThrow();
+			await expect(
+				invoke({ action: "sync_files", roomId: "r", sourceBotId: "local", targetBotId: "d", paths: [path] }),
+			).rejects.toThrow();
 			await expect(
 				invoke({
 					action: "transfer_apply",
 					roomId: "r",
-					targetDeviceId: "d",
+					sourceBotId: "local",
+					targetBotId: "d",
 					transferId: "t",
 					revision: "v",
 					overwritePaths: [path],
@@ -90,7 +109,7 @@ describe("device_collab", () => {
 		);
 		setDeviceCollabService({ execute });
 		const ctx = context();
-		const pending = invoke({ action: "list_devices" }, undefined, ctx);
+		const pending = invoke({ action: "list_bots" }, undefined, ctx);
 		ctx.cwd = "/other";
 		setDeviceCollabService(undefined);
 		finish({ count: 1 });
@@ -104,9 +123,9 @@ describe("device_collab", () => {
 			return {};
 		});
 		setDeviceCollabService({ execute });
-		await expect(invoke({ action: "list_devices" }, controller.signal)).rejects.toThrow();
+		await expect(invoke({ action: "list_bots" }, controller.signal)).rejects.toThrow();
 		expect(execute).toHaveBeenCalledTimes(1);
-		await expect(invoke({ action: "list_devices" }, controller.signal)).rejects.toThrow();
+		await expect(invoke({ action: "list_bots" }, controller.signal)).rejects.toThrow();
 		expect(execute).toHaveBeenCalledTimes(1);
 	});
 	it("does not expose service secrets or raw errors", async () => {
@@ -117,26 +136,26 @@ describe("device_collab", () => {
 				files: [{ path: "a", content: "SECRET", credentials: "SECRET" }],
 			}),
 		});
-		const result = await invoke({ action: "list_devices" });
+		const result = await invoke({ action: "list_bots" });
 		expect(JSON.stringify(result)).not.toContain("SECRET");
-		expect(result.details).toEqual({ action: "list_devices", summary: { status: "ok", files: [{ path: "a" }] } });
+		expect(result.details).toEqual({ action: "list_bots", summary: { status: "ok", files: [{ path: "a" }] } });
 		setDeviceCollabService({
 			execute: async () => {
 				throw new Error("SECRET");
 			},
 		});
-		await expect(invoke({ action: "list_devices" })).rejects.toThrow(/^Device collaboration request failed\.$/);
+		await expect(invoke({ action: "list_bots" })).rejects.toThrow(/^Device collaboration request failed\.$/);
 	});
 	it("limits nested summaries to less than 64KB", async () => {
 		setDeviceCollabService({
 			execute: async () => ({
-				devices: Array.from({ length: 2000 }, () => ({
+				bots: Array.from({ length: 2000 }, () => ({
 					name: "x".repeat(5000),
 					files: Array.from({ length: 80 }, () => ({ path: "x".repeat(5000) })),
 				})),
 			}),
 		});
-		const result = await invoke({ action: "list_devices" });
+		const result = await invoke({ action: "list_bots" });
 		expect(Buffer.byteLength(JSON.stringify(result.details))).toBeLessThan(65536);
 	});
 	it.each(DEVICE_COLLAB_ACTIONS)("keeps %s behind existing write gates", (action) => {

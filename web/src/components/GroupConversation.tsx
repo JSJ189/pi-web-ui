@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { MessageList } from "./MessageList";
 import { ChatInput } from "./ChatInput";
-import { GroupWorkspace } from "./GroupWorkspace";
 import { appUrl } from "../base-url";
 import { randomUuid } from "../uuid";
 import { withToken } from "../auth-token";
@@ -47,7 +46,7 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 	const { locale } = useI18n();
 	const zh = isZhLocale(locale);
 	const [detail, setDetail] = useState<GroupDetail | null>(null);
-	const [devices, setDevices] = useState<GroupDevice[]>([]);
+	const devices: GroupDevice[] = detail?.bots ?? [];
 	const [error, setError] = useState("");
 	const [unavailable, setUnavailable] = useState(false);
 	const [refresh, setRefresh] = useState(0);
@@ -78,13 +77,9 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 			controller = new AbortController();
 			const signal = controller.signal;
 			try {
-				const [next, deviceData] = await Promise.all([
-					request<GroupDetail>(`rooms/${encodeURIComponent(roomId)}`, signal),
-					request<{ devices: GroupDevice[] }>("devices", signal),
-				]);
+				const next = await request<GroupDetail>(`rooms/${encodeURIComponent(roomId)}`, signal);
 				if (generation.current !== token || signal.aborted) return;
 				setDetail(next);
-				setDevices(deviceData.devices);
 				setUnavailable(false);
 				setError("");
 			} catch (cause) {
@@ -117,11 +112,11 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 		() => groupConversationState(roomId, detail, devices, zh),
 		[roomId, detail, devices, zh],
 	);
-	const members = devices.filter((d) => detail?.room.deviceIds.includes(d.id));
+	const members = devices.filter((d) => d.enabled !== false && detail?.room.botIds.includes(d.id));
 	async function send(text: string, targets: string[]): Promise<boolean> {
 		if (!active || unavailable || !detail || sending.current) return false;
 		// Revalidate explicit targets against the current Hub membership.
-		if (targets.some((id) => !detail.room.deviceIds.includes(id))) return false;
+		if (targets.some((id) => !detail.room.botIds.includes(id))) return false;
 		retry.current = groupSendAttempt(retry.current, roomId, text, targets, randomUuid);
 		const controller = new AbortController();
 		mutation.current = controller;
@@ -130,7 +125,7 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 		try {
 			await request(`rooms/${encodeURIComponent(roomId)}/messages`, controller.signal, {
 				text,
-				targetDeviceIds: targets,
+				targetBotIds: targets,
 				idempotencyKey: retry.current.key,
 			});
 			if (controller.signal.aborted || generation.current !== token) return false;
@@ -158,7 +153,6 @@ function GroupRoom({ roomId, active, onBack }: { roomId: string; active: boolean
 		<>
 			<div className="dg-head">
 				<strong>{detail?.room.name ?? (zh ? "群聊" : "Group")}</strong>
-				<GroupWorkspace roomId={roomId} active={active && !unavailable} />
 				{onBack && (
 					<button type="button" className="btn" onClick={onBack}>
 						{zh ? "返回对话" : "Back to chat"}

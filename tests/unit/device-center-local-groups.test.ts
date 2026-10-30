@@ -88,11 +88,23 @@ describe("device user group authority", () => {
 					uiCredentialHash: hashSecret("ui"),
 					createdAt: 1,
 				});
+			for (const device of state.devices)
+				state.bots.push({
+					id: device.id,
+					deviceId: device.id,
+					accountId: device.accountId,
+					name: device.name,
+					description: "",
+					enabled: true,
+					revision: 1,
+					createdAt: 1,
+					updatedAt: 1,
+				});
 			state.rooms.push({
 				id: "team",
 				accountId: "a",
 				name: "team",
-				deviceIds: state.devices.map((device) => device.id),
+				botIds: state.devices.map((device) => device.id),
 				createdAt: 1,
 			});
 		});
@@ -108,10 +120,16 @@ describe("device user group authority", () => {
 					});
 					throw new Error("stale attempt");
 				}
-				await hub.acceptTaskEvent(deviceId, { taskId: task.id, attemptId: task.attemptId, status: "running" });
 				await hub.acceptTaskEvent(deviceId, {
 					taskId: task.id,
 					attemptId: task.attemptId,
+					botId: task.botId,
+					status: "running",
+				});
+				await hub.acceptTaskEvent(deviceId, {
+					taskId: task.id,
+					attemptId: task.attemptId,
+					botId: task.botId,
 					status: "completed",
 					report: "done",
 				});
@@ -153,12 +171,12 @@ describe("device user group authority", () => {
 		}
 		const body = {
 			text: "work",
-			targetDeviceIds: ["reject", "throw", "complete", "replace", "later"],
+			targetBotIds: ["reject", "throw", "complete", "replace", "later"],
 			idempotencyKey: "delivery",
 		};
 		const response = await request("messages", body);
 		expect(response.status).toBe(200);
-		expect(delivered).toEqual(body.targetDeviceIds);
+		expect(delivered).toEqual(body.targetBotIds);
 		expect(response.data.tasks.map((task: { status: string }) => task.status)).toEqual([
 			"failed",
 			"failed",
@@ -179,7 +197,7 @@ describe("device user group authority", () => {
 			const replacement = draft.tasks.find((task) => task.deviceId === "replace")!;
 			replacement.status = "interrupted";
 		});
-		expect((await request("members", { deviceIds: ["source"] })).status).toBe(200);
+		expect((await request("members", { botIds: ["source"] })).status).toBe(200);
 		expect((await request("delete", {})).status).toBe(200);
 	});
 	it("separates human UI credentials, member visibility, account targets and agent parent budgets", async () => {
@@ -201,7 +219,19 @@ describe("device user group authority", () => {
 					uiCredentialHash: hashSecret(`ui-${id}`),
 					createdAt: 1,
 				});
-			s.rooms.push({ id: "private", accountId: "a", name: "private", deviceIds: ["two"], createdAt: 1 });
+			for (const device of s.devices)
+				s.bots.push({
+					id: device.id,
+					deviceId: device.id,
+					accountId: device.accountId,
+					name: device.name,
+					description: "",
+					enabled: true,
+					revision: 1,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			s.rooms.push({ id: "private", accountId: "a", name: "private", botIds: ["two"], createdAt: 1 });
 		});
 		async function request(path: string, body?: unknown, secret = "ui-one", device = "one") {
 			return new Promise<{ status: number; data: any }>((resolve, reject) => {
@@ -238,37 +268,73 @@ describe("device user group authority", () => {
 		expect((await request("device-user/rooms", undefined, "agent-one")).status).toBe(401);
 		expect((await request("agent/rooms", undefined, "ui-one")).status).toBe(401);
 		const listing = await request("device-user/rooms");
-		expect(listing).toEqual({ status: 200, data: { rooms: [] } });
-		expect((await request("device-user/rooms/private")).status).toBe(404);
-		expect((await request("device-user/rooms/private/messages", { text: "no" })).status).toBe(403);
-		expect((await request("device-user/rooms", { name: "bad", deviceIds: ["other"] })).status).toBe(400);
-		const created = await request("device-user/rooms", { name: "team", deviceIds: ["two"] });
+		expect(listing.status).toBe(200);
+		expect(listing.data.rooms.map((r: { id: string }) => r.id)).toEqual(["private"]);
+		expect((await request("device-user/rooms/private")).status).toBe(200);
+		expect(
+			(await request("agent/rooms/private/messages", { text: "no", sourceBotId: "one" }, "agent-one")).status,
+		).toBe(403);
+		expect((await request("device-user/rooms", { name: "bad", botIds: ["other"] })).status).toBe(400);
+		const created = await request("device-user/rooms", { name: "team", botIds: ["two"] });
 		expect(created.status).toBe(201);
-		expect(created.data.room.deviceIds).toEqual(["two", "one"]);
+		expect(created.data.room.botIds).toEqual(["two"]);
+		expect(
+			(await request(`device-user/rooms/${created.data.room.id}/members`, { botIds: ["one", "two"] })).status,
+		).toBe(200);
 		const path = `rooms/${created.data.room.id}/messages`;
-		const chat = await request(`device-user/${path}`, { text: "hello", targetDeviceIds: [] });
+		const chat = await request(`device-user/${path}`, { text: "hello", targetBotIds: [] });
 		expect(chat.data.tasks).toEqual([]);
 		expect(chat.data.message.sender).toEqual({ type: "human", id: "a", name: "a · one", sourceDeviceId: "one" });
 		const root = await request(`device-user/${path}`, {
 			text: "do work",
-			targetDeviceIds: ["two"],
+			targetBotIds: ["two"],
 			idempotencyKey: "root",
 		});
 		expect(root.status).toBe(200);
-		expect(root.data.tasks[0]).toMatchObject({ deviceId: "two", dispatchDepth: 0, dispatchCount: 1 });
-		expect((await request(`agent/${path}`, { text: "loop", targetDeviceIds: ["two"] }, "agent-one")).status).toBe(400);
-		expect((await request(`device-user/${path}`, { text: "other", targetDeviceIds: ["other"] })).status).toBe(400);
+		expect(root.data.tasks[0]).toMatchObject({ botId: "two", deviceId: "two", dispatchDepth: 0, dispatchCount: 1 });
+		// Device authentication cannot claim another device's Bot, even in the same account and room.
+		expect(
+			(await request(`agent/${path}`, { text: "forged sender", sourceBotId: "two", targetBotIds: [] }, "agent-one"))
+				.status,
+		).toBe(403);
+		await hub.store.transact((s) => {
+			const sibling = { ...s.bots.find((b) => b.id === "two")!, id: "two-sibling" };
+			s.bots.push(sibling);
+			s.rooms.find((r) => r.id === created.data.room.id)!.botIds.push(sibling.id);
+			s.tasks.find((t) => t.id === root.data.tasks[0].id)!.status = "running";
+		});
+		// A sibling Bot on the parent task's device cannot inherit that task's dispatch budget.
+		expect(
+			(
+				await request(
+					`agent/${path}`,
+					{
+						text: "borrow parent",
+						sourceBotId: "two-sibling",
+						targetBotIds: ["one"],
+						parentTaskId: root.data.tasks[0].id,
+					},
+					"agent-two",
+					"two",
+				)
+			).status,
+		).toBe(400);
+		expect(hub.store.snapshot().tasks).toHaveLength(1);
+		expect(
+			(await request(`agent/${path}`, { text: "loop", targetBotIds: ["two"], sourceBotId: "one" }, "agent-one")).status,
+		).toBe(400);
+		expect((await request(`device-user/${path}`, { text: "other", targetBotIds: ["other"] })).status).toBe(400);
 		const devices = await request("device-user/devices");
 		expect(devices.data.devices.map((d: { id: string }) => d.id)).toEqual(["one", "two"]);
 		expect(JSON.stringify(devices.data)).not.toContain("Credential");
 		const roomPath = `device-user/rooms/${created.data.room.id}`;
 		expect((await request(`${roomPath}/rename`, { name: "renamed" })).data.room.name).toBe("renamed");
 		expect((await request(`${roomPath}/delete`, {})).data.code).toBe("ACTIVE_TASKS");
-		expect((await request(`${roomPath}/members`, { deviceIds: [] })).data.code).toBe("ACTIVE_TASKS");
+		expect((await request(`${roomPath}/members`, { botIds: ["one"] })).data.code).toBe("ACTIVE_TASKS");
 		await hub.store.transact((s) => {
 			for (const task of s.tasks) task.status = "completed";
 		});
-		expect((await request(`${roomPath}/members`, { deviceIds: [] })).data.room.deviceIds).toEqual(["one"]);
+		expect((await request(`${roomPath}/members`, { botIds: ["one"] })).data.room.botIds).toEqual(["one"]);
 		expect((await request(`${roomPath}/delete`, {})).data).toEqual({ deleted: true });
 		expect(hub.store.snapshot().messages.some((m) => m.roomId === created.data.room.id)).toBe(false);
 		expect(hub.store.snapshot().tasks.some((t) => t.roomId === created.data.room.id)).toBe(false);
@@ -276,6 +342,53 @@ describe("device user group authority", () => {
 			s.devices = s.devices.filter((d) => d.id !== "one");
 		});
 		expect((await request("device-user/rooms")).status).toBe(401);
+	});
+	it("rejects task events from a sibling Bot on the same device or another device", async () => {
+		const hub = await createDeviceHub({ dataDir: await directory(), publicUrl: "http://hub.test" });
+		cleanup.push(() => hub.close());
+		await hub.store.transact((s) => {
+			s.accounts.push({ id: "a", username: "a", passwordHash: "unused", createdAt: 1 });
+			for (const id of ["host", "foreign"])
+				s.devices.push({ id, accountId: "a", name: id, credentialHash: "unused", createdAt: 1 });
+			for (const id of ["worker", "sibling"])
+				s.bots.push({
+					id,
+					deviceId: "host",
+					accountId: "a",
+					name: id,
+					description: "",
+					enabled: true,
+					revision: 1,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			s.rooms.push({ id: "team", accountId: "a", name: "team", botIds: ["worker", "sibling"], createdAt: 1 });
+			s.tasks.push({
+				id: "task",
+				attemptId: "attempt",
+				roomId: "team",
+				accountId: "a",
+				deviceId: "host",
+				botId: "worker",
+				botRevision: 1,
+				text: "work",
+				status: "queued",
+				createdAt: 1,
+				updatedAt: 1,
+			});
+		});
+		const event = { taskId: "task", attemptId: "attempt", botId: "worker", status: "running" as const };
+		const before = hub.store.snapshot();
+		await expect(hub.acceptTaskEvent("host", { ...event, botId: "sibling" })).rejects.toMatchObject({ status: 404 });
+		await expect(hub.acceptTaskEvent("foreign", event)).rejects.toMatchObject({ status: 404 });
+		expect(hub.store.snapshot()).toEqual(before);
+		await hub.acceptTaskEvent("host", event);
+		await expect(
+			hub.acceptTaskEvent("host", { ...event, botId: "sibling", status: "completed", report: "forged" }),
+		).rejects.toMatchObject({ status: 404 });
+		expect(hub.store.snapshot().tasks[0].status).toBe("running");
+		await hub.acceptTaskEvent("host", { ...event, status: "completed", report: "verified" });
+		expect(hub.store.snapshot().messages.at(-1)?.sender).toMatchObject({ type: "bot", id: "worker" });
 	});
 	it("bridges only fixed user routes without execution permission or secret leakage, and bounds remote responses", async () => {
 		const remote = express();
@@ -335,7 +448,7 @@ describe("device user group authority", () => {
 			});
 		}
 		expect((await request("rooms")).status).toBe(200);
-		expect((await request("rooms", { name: "team", deviceIds: [] })).status).toBe(201);
+		expect((await request("rooms", { name: "team", botIds: [] })).status).toBe(201);
 		expect(calls[0]).toEqual({ path: "/api/device-user/rooms", auth: "Bearer ui-secret" });
 		expect((await request("rooms", { name: "team", endpoint: "http://evil.test" })).status).toBe(400);
 		const forbidden = await request("rooms", { name: "team" }, "http://evil.test");

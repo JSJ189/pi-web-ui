@@ -3,16 +3,12 @@ import { createDeviceCollabService } from "./collab-service.js";
 import { createDeviceTaskExecutor, type DeviceExecutorTask, type DeviceTaskExecutorOptions } from "./executor.js";
 import { createDeviceFileSync } from "./file-sync.js";
 import { DeviceTaskError } from "./task-error.js";
+import type { LocalBotRegistry } from "./bots.js";
 
-/** Only local registry capabilities can select a task or transfer workspace. */
-export interface DeviceRuntimeWorkspaces {
-	get(roomId: string): { root: string; revision: string } | undefined;
-	acquire(roomId: string): Promise<{ root: string; revision: string; release(): void }>;
-}
 type Config = { hubUrl: string; deviceId: string; credential: string; allowExecution: boolean };
 type Files = ReturnType<typeof createDeviceFileSync>;
 type Executor = { run(task: DeviceExecutorTask): Promise<string>; close(): void | Promise<void> };
-type Owner = { roomId: string; taskId: string; root: string };
+type Owner = { roomId: string; taskId: string; root: string; botId: string };
 type TaskOwner = { controller: AbortController; executor?: Executor; done?: Promise<unknown> };
 
 export function createDeviceRuntime(options: {
@@ -20,13 +16,13 @@ export function createDeviceRuntime(options: {
 	localOrigin: string;
 	localAuthToken?: string;
 	dataDir: string;
-	workspaces: DeviceRuntimeWorkspaces;
+	bots: LocalBotRegistry;
 	executorFactory?: (options: DeviceTaskExecutorOptions) => Executor;
 }) {
-	const { config, workspaces } = options;
+	const { config, bots } = options;
 	const sessions = new Map<string, Owner>();
-	const files = new Map<string, { roomId: string; revision: string; files: Files }>();
-	const receipts = new Map<string, { roomId: string; revision: string; files: Files }>();
+	const files = new Map<string, { roomId: string; botId: string; revision: string; files: Files }>();
+	const receipts = new Map<string, { roomId: string; botId: string; revision: string; files: Files }>();
 	const operations = new Set<Promise<unknown>>();
 	let closed = false;
 	let blocked: unknown;
@@ -49,16 +45,17 @@ export function createDeviceRuntime(options: {
 	}
 	async function sweep() {
 		for (const [key, entry] of files) {
-			if (workspaces.get(entry.roomId)?.revision === entry.revision) continue;
+			const bot = bots.get(entry.botId);
+			if (bot?.enabled && `${bot.id}:${bot.revision}` === entry.revision) continue;
 			files.delete(key);
 			for (const [id, receipt] of receipts) if (receipt.files === entry.files) receipts.delete(id);
 			await entry.files.close();
 		}
 	}
-	async function acquire(roomId: string, signal?: AbortSignal) {
+	async function acquire(botId: string, signal?: AbortSignal) {
 		enabled(signal);
 		await sweep();
-		const lease = await workspaces.acquire(roomId);
+		const lease = await bots.acquire(botId);
 		try {
 			enabled(signal);
 			return lease;
@@ -67,12 +64,13 @@ export function createDeviceRuntime(options: {
 			throw error;
 		}
 	}
-	function roomFiles(roomId: string, lease: { root: string; revision: string }) {
-		const key = JSON.stringify([roomId, lease.revision]);
+	function roomFiles(roomId: string, botId: string, lease: { root: string; revision: string }) {
+		const key = JSON.stringify([roomId, botId, lease.revision]);
 		let entry = files.get(key);
 		if (!entry) {
 			entry = {
 				roomId,
+				botId,
 				revision: lease.revision,
 				files: createDeviceFileSync({
 					root: lease.root,
@@ -87,17 +85,21 @@ export function createDeviceRuntime(options: {
 	const service = createDeviceCollabService({
 		getConfig: () => (closed ? undefined : config),
 		getParentTask: (context) => (context?.sessionId ? sessions.get(context.sessionId)?.taskId : undefined),
-		async workspaceResolver({ roomId, context, signal }) {
+		getSourceBot: (context) => (context?.sessionId ? sessions.get(context.sessionId)?.botId : undefined),
+		async workspaceResolver({ roomId, sourceBotId, context, signal }) {
 			const boundSignal = AbortSignal.any([generation.signal, ...(signal ? [signal] : [])]);
-			const lease = await acquire(roomId, boundSignal);
+			const lease = await acquire(sourceBotId, boundSignal);
 			try {
 				const owner = context.sessionId ? sessions.get(context.sessionId) : undefined;
 				if (
+					!owner ||
 					resolve(context.cwd) !== resolve(lease.root) ||
-					(owner && (owner.roomId !== roomId || owner.root !== lease.root))
+					(roomId && owner.roomId !== roomId) ||
+					owner.root !== lease.root ||
+					owner.botId !== sourceBotId
 				)
 					throw new Error("Task workspace ownership mismatch");
-				return { ...lease, files: roomFiles(roomId, lease).files };
+				return { ...lease, botId: sourceBotId, files: roomFiles(roomId, sourceBotId, lease).files };
 			} catch (error) {
 				lease.release();
 				throw error;
@@ -132,27 +134,36 @@ export function createDeviceRuntime(options: {
 				if (!stopping) stopping = Promise.resolve().then(() => owner.executor?.close());
 				void stopping.catch(() => {});
 			};
-			try {
-				if (!task.roomId)
-					throw new DeviceTaskError("请在本机为该群配置项目。 / Configure a local project for this room.");
+			const confirmStop = async () => {
+				stop();
 				try {
-					lease = await acquire(task.roomId, taskSignal);
+					await stopping;
+				} catch (error) {
+					blocked = error;
+					throw error;
+				}
+			};
+			try {
+				if (!task.roomId) throw new DeviceTaskError("Task room required");
+				try {
+					if (task.deviceId !== config.deviceId || !task.botId) throw new Error("Task Bot route mismatch");
+					lease = await acquire(task.botId, taskSignal);
+					if (task.botRevision !== lease.bot.revision) throw new Error("Task Bot revision mismatch");
 				} catch (error) {
 					if (taskSignal.aborted) throw error;
-					throw new DeviceTaskError(
-						"请在本机为该群配置项目，或等待项目操作完成。 / Configure a local room project or wait for workspace operations.",
-					);
+					throw new DeviceTaskError("目标 Bot 不可用、配置已变更或正在忙碌。 / Target Bot unavailable or busy.");
 				}
 				owner.executor = (options.executorFactory ?? createDeviceTaskExecutor)({
 					localOrigin: options.localOrigin,
 					localAuthToken: options.localAuthToken,
 					cwd: lease.root,
+					bot: lease.bot,
 					allowExecution: config.allowExecution,
 					onSession(taskId, sessionId) {
 						for (const [id, bound] of sessions)
 							if (bound.taskId === taskId && bound.roomId === task.roomId) sessions.delete(id);
 						if (sessionId && !taskSignal.aborted)
-							sessions.set(sessionId, { taskId, roomId: task.roomId, root: lease!.root });
+							sessions.set(sessionId, { taskId, roomId: task.roomId, root: lease!.root, botId: task.botId });
 					},
 				});
 				taskSignal.addEventListener("abort", stop, { once: true });
@@ -162,13 +173,7 @@ export function createDeviceRuntime(options: {
 				return result;
 			} finally {
 				taskSignal.removeEventListener("abort", stop);
-				try {
-					stop();
-					await stopping;
-				} catch (error) {
-					blocked = error;
-					throw error;
-				}
+				await confirmStop();
 				for (const [id, bound] of sessions)
 					if (bound.taskId === task.id && bound.roomId === task.roomId) sessions.delete(id);
 				lease?.release();
@@ -187,17 +192,24 @@ export function createDeviceRuntime(options: {
 					throw new Error("Invalid transfer command");
 				const command = payload as Record<string, unknown>;
 				if (typeof command.roomId !== "string" || !command.roomId) throw new Error("Room required");
-				const lease = await acquire(command.roomId, commandSignal);
+				if (typeof command.targetBotId !== "string" || !command.targetBotId) throw new Error("Target Bot required");
+				const lease = await acquire(command.targetBotId, commandSignal);
 				try {
+					if (command.targetBotRevision !== lease.bot.revision) throw new Error("Transfer Bot revision mismatch");
 					if (action === "transfer_stage") {
-						const entry = roomFiles(command.roomId, lease);
+						const entry = roomFiles(command.roomId, command.targetBotId, lease);
 						const preview = await entry.files.stage(command.bundle, { signal: commandSignal });
 						commandSignal.throwIfAborted();
 						receipts.set(preview.id, entry);
 						return preview;
 					}
 					const receipt = typeof command.transferId === "string" ? receipts.get(command.transferId) : undefined;
-					if (!receipt || receipt.roomId !== command.roomId || receipt.revision !== lease.revision)
+					if (
+						!receipt ||
+						receipt.roomId !== command.roomId ||
+						receipt.botId !== command.targetBotId ||
+						receipt.revision !== lease.revision
+					)
 						throw new Error("Transfer workspace changed or transfer unavailable");
 					if (action === "transfer_preview")
 						return await receipt.files.preview(command.transferId as string, { signal: commandSignal });
@@ -225,7 +237,7 @@ export function createDeviceRuntime(options: {
 		generation = new AbortController();
 		previous.abort();
 		active?.controller.abort();
-		await Promise.allSettled([...operations]);
+		await Promise.allSettled(operations);
 		await sweep();
 		if (blocked) throw blocked;
 	}

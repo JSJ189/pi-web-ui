@@ -3,8 +3,10 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
+import { getLocalBotOptions, type BotCatalogSources } from "./bot-catalog.js";
 import { isIP } from "node:net";
-import { DeviceWorkspaceError, type DeviceWorkspaces } from "./workspaces.js";
+import { DeviceWorkspaceError } from "./workspaces.js";
+import { createLocalBotRegistry, type LocalBotRegistry, type LocalBotInput } from "./bots.js";
 
 export interface LocalDeviceConfig {
 	hubUrl: string;
@@ -21,9 +23,9 @@ interface Connection {
 interface Options {
 	app: Express;
 	dataDir: string;
-	connect(config: LocalDeviceConfig): Connection | Promise<Connection>;
-	/** Share this scope-cached factory with the task/transfer runtime. */
-	workspaceRegistry?(config: { hubUrl: string; deviceId: string }): Promise<DeviceWorkspaces>;
+	connect(config: LocalDeviceConfig, syncBots: () => Promise<void>): Connection | Promise<Connection>;
+	bots?: LocalBotRegistry;
+	botCatalog?: BotCatalogSources;
 }
 
 /** Hub enrollment accepts HTTP(S) origins, including public IP addresses. */
@@ -74,6 +76,7 @@ function localOnly(req: Request, res: Response, next: NextFunction): void {
 
 export async function installLocalDeviceCenter(options: Options) {
 	const file = join(options.dataDir, "device-center.json");
+	const bots = options.bots ?? (await createLocalBotRegistry(options.dataDir));
 	let config: LocalDeviceConfig | undefined;
 	let connection: Connection | undefined;
 	let pending: { hubUrl: string; name: string; pollToken: string; expiresAt: number; generation: number } | undefined;
@@ -98,10 +101,34 @@ export async function installLocalDeviceCenter(options: Options) {
 	async function reconnect() {
 		await connection?.close();
 		connection = undefined;
+		await bots.setScope(config ? JSON.stringify([config.hubUrl, config.deviceId]) : "unpaired");
 		if (config && !closed) {
 			const { uiCredential: _uiCredential, ...agentConfig } = config;
-			connection = await options.connect(agentConfig);
+			connection = await options.connect(agentConfig, syncBots);
 		}
+	}
+	async function syncBots() {
+		const captured = config;
+		if (!captured || closed) return;
+		const response = await fetch(`${captured.hubUrl}/api/agent/bots`, {
+			method: "PUT",
+			redirect: "error",
+			signal: AbortSignal.timeout(15000),
+			headers: {
+				"Content-Type": "application/json",
+				"X-Device-Id": captured.deviceId,
+				Authorization: `Bearer ${captured.credential}`,
+			},
+			body: JSON.stringify({
+				bots: bots
+					.list()
+					.map(({ id, name, description, enabled, revision }) => ({ id, name, description, enabled, revision })),
+			}),
+		});
+		await response.body?.cancel();
+		if (!response.ok)
+			throw new Error("Bot configuration saved locally, but Hub synchronization failed; retry after reconnecting");
+		if (config !== captured || closed) throw new Error("Device binding changed during Bot synchronization");
 	}
 	async function hubRequest(hubUrl: string, path: string, body: unknown) {
 		const response = await fetch(`${hubUrl}${path}`, {
@@ -251,123 +278,113 @@ export async function installLocalDeviceCenter(options: Options) {
 			}
 		});
 	}
-	// Local project paths never pass through the hub proxy.
-	function workspaceRoute(method: "get" | "post", suffix: string, operation: "read" | "set" | "remove") {
-		options.app[method](`/api/device-center/${suffix}`, async (req, res) => {
-			const captured = config;
-			const capturedGeneration = generation;
-			if (!captured) return res.status(409).json({ code: "NOT_PAIRED", error: "Pair this computer first" });
-			if (!options.workspaceRegistry)
-				return res
-					.status(409)
-					.json({ code: "WORKSPACES_UNAVAILABLE", error: "Local project bindings are unavailable" });
-			if (closed || inFlight >= 8) return res.status(429).json({ code: "BUSY", error: "Device center busy" });
-			inFlight++;
-			const controller = new AbortController();
-			const cancel = () => {
-				if (!res.writableEnded) controller.abort();
-			};
-			const check = () => {
-				if (closed || config !== captured || generation !== capturedGeneration)
-					throw new DeviceWorkspaceError(409, "DEVICE_CHANGED", "Device binding changed; refresh");
-				if (controller.signal.aborted)
-					throw new DeviceWorkspaceError(409, "REQUEST_CANCELLED", "Project binding request cancelled");
-			};
-			activeRequests.add(controller);
-			req.once("aborted", cancel);
-			res.once("close", cancel);
-			try {
-				const fields = operation === "set" ? ["roomId", "path"] : ["roomId"];
-				const input = method === "get" ? req.query : req.body;
+	options.app.get("/api/device-center/local-bots", (_req, res) => {
+		res.json({ bots: bots.list() });
+	});
+	function botMutation(remove: boolean) {
+		return (req: Request, res: Response) => {
+			void serialize(async () => {
+				if (closed) throw new DeviceWorkspaceError(409, "CLOSED", "Device center is shutting down");
+				const input = req.body;
+				const fields = remove
+					? ["revision"]
+					: [
+							"id",
+							"revision",
+							"name",
+							"description",
+							"systemPrompt",
+							"cwd",
+							"model",
+							"tools",
+							"skills",
+							"mcpServers",
+							"enabled",
+						];
 				if (
 					!input ||
 					typeof input !== "object" ||
 					Array.isArray(input) ||
-					Object.keys(input).some((key) => !fields.includes(key) && !(method === "get" && key === "token"))
+					Object.keys(input).some((key) => !fields.includes(key)) ||
+					Buffer.byteLength(JSON.stringify(input)) > 128 * 1024
 				)
-					throw new DeviceWorkspaceError(400, "INVALID_BODY", "Invalid project binding request");
-				const roomId = input.roomId;
-				if (
-					(operation !== "read" || roomId !== undefined) &&
-					(typeof roomId !== "string" || !roomId.trim() || roomId.length > 256)
-				)
-					throw new DeviceWorkspaceError(400, "INVALID_ROOM", "Invalid room ID");
-				if (operation === "set" && (typeof input.path !== "string" || input.path.length > 32768))
-					throw new DeviceWorkspaceError(400, "WORKSPACE_INVALID", "Invalid project path");
-				const data = await serialize(async () => {
-					check();
-					if (operation !== "read" || typeof roomId === "string") {
-						if (!captured.uiCredential)
-							throw new DeviceWorkspaceError(409, "REPAIR_REQUIRED", "Pair this computer again to enable group chat");
-						let response: globalThis.Response;
-						try {
-							response = await fetch(
-								`${captured.hubUrl}/api/device-user/rooms/${encodeURIComponent(roomId as string)}`,
-								{
-									redirect: "error",
-									signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15000)]),
-									headers: { "X-Device-Id": captured.deviceId, Authorization: `Bearer ${captured.uiCredential}` },
-								},
-							);
-							await response.body?.cancel();
-						} catch {
-							check();
-							throw new DeviceWorkspaceError(502, "HUB_UNAVAILABLE", "Could not verify group membership");
-						}
-						check();
-						if (!response.ok)
-							throw new DeviceWorkspaceError(
-								response.status === 404 ? 404 : 403,
-								"HUB_FORBIDDEN",
-								"Group membership verification rejected",
-							);
-					}
-					const registry = await options.workspaceRegistry!({ hubUrl: captured.hubUrl, deviceId: captured.deviceId });
-					check();
-					if (operation === "read")
-						return typeof roomId === "string"
-							? { binding: registry.get(roomId), defaultRoot: registry.defaultRoot }
-							: { bindings: registry.list(), defaultRoot: registry.defaultRoot };
-					if (operation === "set")
-						return {
-							binding: await registry.set({
-								roomId: roomId as string,
-								path: input.path as string,
-								signal: controller.signal,
-							}),
-						};
-					await registry.remove(roomId as string, { signal: controller.signal });
-					return { removed: true };
-				});
-				if (!res.destroyed) res.json(data);
-			} catch (error) {
-				if (!res.destroyed) {
-					const known = error instanceof DeviceWorkspaceError;
-					res.status(known ? error.status : 500).json({
-						code: known ? error.code : "WORKSPACE_FAILED",
-						error: known ? error.message : "Local project binding operation failed",
-					});
+					throw new DeviceWorkspaceError(400, "BOT_INVALID", "Invalid Bot configuration");
+				const result = remove
+					? (await bots.remove(String(req.params.id), input.revision), { removed: true })
+					: { bot: await bots.upsert(input as LocalBotInput) };
+				try {
+					await syncBots();
+					return { ...result, synced: true };
+				} catch {
+					return { ...result, synced: false };
 				}
-			} finally {
-				inFlight--;
-				activeRequests.delete(controller);
-				req.off("aborted", cancel);
-				res.off("close", cancel);
-			}
-		});
+			}).then(
+				(data) => res.json(data),
+				(error) => {
+					const known = error instanceof DeviceWorkspaceError;
+					res
+						.status(known ? error.status : 500)
+						.json({ code: known ? error.code : "BOT_FAILED", error: known ? error.message : "Bot operation failed" });
+				},
+			);
+		};
 	}
-	workspaceRoute("get", "workspaces", "read");
-	workspaceRoute("post", "workspaces", "set");
-	workspaceRoute("post", "workspaces/remove", "remove");
+	options.app.get("/api/device-center/local-bot-options", async (req, res) => {
+		if (req.headers.origin || req.headers["sec-fetch-site"] === "cross-site") {
+			try {
+				const origin = new URL(req.headers.origin ?? "");
+				if (!["http:", "https:"].includes(origin.protocol) || origin.host !== req.headers.host) throw new Error();
+			} catch {
+				res.status(403).json({ code: "LOCAL_ONLY", error: "Same-origin request required" });
+				return;
+			}
+		}
+		res.setHeader("Cache-Control", "no-store");
+		const controller = new AbortController();
+		const cancel = () => {
+			if (!res.writableEnded) controller.abort();
+		};
+		req.once("aborted", cancel);
+		res.once("close", cancel);
+		try {
+			const data = await getLocalBotOptions(
+				options.botCatalog ?? { defaultCwd: process.cwd(), dataDir: options.dataDir },
+				req.query.cwd,
+				controller.signal,
+			);
+			if (!controller.signal.aborted) res.json(data);
+		} catch (error) {
+			if (!controller.signal.aborted) {
+				const known = error instanceof DeviceWorkspaceError;
+				res.status(known ? error.status : 500).json({
+					code: known ? error.code : "BOT_CATALOG_FAILED",
+					error: known ? error.message : "Bot catalog unavailable",
+				});
+			}
+		} finally {
+			req.off("aborted", cancel);
+			res.off("close", cancel);
+		}
+	});
+	options.app.post("/api/device-center/local-bots", botMutation(false));
+	options.app.post("/api/device-center/local-bots/:id/delete", botMutation(true));
+	userRoute("get", "bots", []);
 	userRoute("get", "devices", []);
 	userRoute("post", "devices/:id/open", []);
 	userRoute("get", "rooms", []);
 	userRoute("get", "rooms/:id", []);
-	userRoute("post", "rooms", ["name", "deviceIds"]);
+	userRoute("post", "rooms", ["name", "botIds"]);
 	userRoute("post", "rooms/:id/rename", ["name"]);
-	userRoute("post", "rooms/:id/members", ["deviceIds"]);
+	userRoute("post", "rooms/:id/members", ["botIds"]);
 	userRoute("post", "rooms/:id/delete", []);
-	userRoute("post", "rooms/:id/messages", ["text", "targetDeviceIds", "idempotencyKey", "handoff", "parentTaskId"]);
+	userRoute("post", "rooms/:id/messages", [
+		"text",
+		"targetBotIds",
+		"sourceBotId",
+		"idempotencyKey",
+		"handoff",
+		"parentTaskId",
+	]);
 	function route(path: string, work: (req: Request) => Promise<unknown>) {
 		options.app.post(`/api/device-center/${path}`, (req, res) => {
 			void serialize(async () => {
@@ -443,6 +460,7 @@ export async function installLocalDeviceCenter(options: Options) {
 		return { disconnected: true };
 	});
 	return {
+		syncBots,
 		getConfig() {
 			if (!config) return undefined;
 			const { uiCredential: _uiCredential, ...agentConfig } = config;

@@ -11,6 +11,7 @@ import {
 export { MACHINE_ROOT, browseQuery, joinProjectPath, isValidProjectName, parentOf };
 
 interface ProjectPickerProps {
+	localOnly?: boolean;
 	open: boolean;
 	currentCwd: string;
 	pathCompletions: { name: string; path: string; type: "dir" | "file" }[];
@@ -32,12 +33,14 @@ export function ProjectPicker({
 	onSelectDirectory,
 	onCreateProject,
 	mode = "project",
+	localOnly,
 }: ProjectPickerProps) {
 	const t = useT();
 	if (!open) return null;
 
 	return (
 		<DirectoryBrowser
+			localOnly={localOnly}
 			currentCwd={currentCwd}
 			pathCompletions={pathCompletions}
 			workspaceRoots={workspaceRoots}

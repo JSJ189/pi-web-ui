@@ -74,6 +74,7 @@ export const parentOf = (p: string): string | null => {
 };
 
 interface DirectoryBrowserProps {
+	localOnly?: boolean;
 	currentCwd: string;
 	pathCompletions: { name: string; path: string; type: "dir" | "file" }[];
 	workspaceRoots: string[];
@@ -99,11 +100,12 @@ export function DirectoryBrowser({
 	backdropClassName,
 	role,
 	ariaLabel,
+	localOnly = false,
 }: DirectoryBrowserProps) {
 	const t = useT();
 	const isZh = isZhLocale(useLocale());
 	const capabilities = useEngineCapabilities();
-	const supportsRemoteSsh = capabilities.remoteSsh;
+	const supportsRemoteSsh = capabilities.remoteSsh && !localOnly;
 	// 常用目录跳转（快照直给的绝对路径；旧服务空串则不渲染对应按钮）
 	const homeDir = useAppField("homeDir");
 	const desktopDir = useAppField("desktopDir");

@@ -13,8 +13,8 @@ const devices = [
 	{ id: "outsider", name: "Outside", online: true },
 ];
 const rooms = [
-	{ id: "one", name: "First room", deviceIds: ["alpha", "beta"] },
-	{ id: "two", name: "Second room", deviceIds: ["beta"] },
+	{ id: "one", name: "First room", botIds: ["alpha", "beta"] },
+	{ id: "two", name: "Second room", botIds: ["beta"] },
 ];
 const detail = (id = "one") => ({
 	room: rooms.find((room) => room.id === id)!,
@@ -32,7 +32,7 @@ function mockApi(handler?: (path: string, init: RequestInit) => Response | Promi
 		const path = url.split("/api/device-center/")[1].split("?")[0];
 		const custom = handler?.(path, init);
 		if (custom) return custom;
-		if (path === "devices") return response({ devices });
+		if (path === "bots") return response({ bots: devices.map((d) => ({ ...d, deviceId: "host", enabled: true })) });
 		if (path === "rooms") return response({ rooms });
 		return response(detail(path.split("/")[1]));
 	});
@@ -101,7 +101,7 @@ describe("device group management", () => {
 			await input(" Engineering ");
 			await act(async () => host.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')[1].click());
 			await submit();
-			expect(bodies("/rooms?")).toEqual([{ name: "Engineering", deviceIds: ["beta"] }]);
+			expect(bodies("/rooms?")).toEqual([{ name: "Engineering", botIds: ["beta"] }]);
 			expect(changed).toHaveBeenCalledTimes(1);
 			expect((opened.mock.calls[0][0] as CustomEvent).detail).toEqual({ roomId: "one" });
 			expect(host.querySelector("form")).toBeNull();
@@ -129,7 +129,7 @@ describe("device group management", () => {
 	it("opens member management through navigation and saves the selected stable IDs", async () => {
 		mockApi((path, init) =>
 			path === "rooms/one/members" && init.method === "POST"
-				? response({ room: { ...rooms[0], deviceIds: ["beta"] } })
+				? response({ room: { ...rooms[0], botIds: ["beta"] } })
 				: undefined,
 		);
 		await render({ revision: 1, roomId: "one", manage: true });
@@ -139,7 +139,7 @@ describe("device group management", () => {
 		expect(host.querySelector("textarea, .dg-timeline, .dg-composer")).toBeNull();
 		await act(async () => boxes[0].click());
 		await submit();
-		expect(bodies("/rooms/one/members")).toEqual([{ deviceIds: ["beta"] }]);
+		expect(bodies("/rooms/one/members")).toEqual([{ botIds: ["beta"] }]);
 		expect(host.querySelector("form")).toBeNull();
 	});
 	it("ignores stale room details after navigation changes, including on reactivation", async () => {
@@ -224,7 +224,7 @@ describe("device group management", () => {
 		let resolveDevices!: (value: Response) => void;
 		let signal!: AbortSignal;
 		mockApi((path, init) => {
-			if (path === "devices") {
+			if (path === "bots") {
 				signal = init.signal!;
 				return new Promise((resolve) => {
 					resolveDevices = resolve;
@@ -240,7 +240,9 @@ describe("device group management", () => {
 		vi.spyOn(document, "visibilityState", "get").mockReturnValue("hidden");
 		await act(async () => document.dispatchEvent(new Event("visibilitychange")));
 		expect(signal.aborted).toBe(true);
-		await act(async () => resolveDevices(response({ devices })));
+		await act(async () =>
+			resolveDevices(response({ bots: devices.map((d) => ({ ...d, deviceId: "host", enabled: true })) })),
+		);
 		await act(async () => vi.advanceTimersByTime(6000));
 		expect(fetcher).toHaveBeenCalledTimes(2);
 		act(() => root!.unmount());

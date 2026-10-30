@@ -19,6 +19,10 @@ type Authenticate = (
 type Receipt = {
 	id: string;
 	sourceDeviceId: string;
+	sourceBotId: string;
+	targetBotId: string;
+	sourceBotRevision: number;
+	targetBotRevision: number;
 	accountId: string;
 	roomId: string;
 	targetDeviceId: string;
@@ -91,10 +95,19 @@ export async function installDeviceTransfers(options: Options) {
 		for (const row of parsed) {
 			if (
 				!row ||
-				![row.id, row.sourceDeviceId, row.accountId, row.roomId, row.targetDeviceId, row.localTransferId].every(
-					field,
-				) ||
+				![
+					row.id,
+					row.sourceBotId,
+					row.targetBotId,
+					row.sourceDeviceId,
+					row.accountId,
+					row.roomId,
+					row.targetDeviceId,
+					row.localTransferId,
+				].every(field) ||
 				!field(row.roomMembers) ||
+				!Number.isSafeInteger(row.sourceBotRevision) ||
+				!Number.isSafeInteger(row.targetBotRevision) ||
 				!Number.isFinite(row.expiresAt) ||
 				(row.applyStarted !== undefined && typeof row.applyStarted !== "boolean")
 			)
@@ -152,14 +165,22 @@ export async function installDeviceTransfers(options: Options) {
 					Buffer.byteLength(JSON.stringify(body)) > MAX_PACKET ||
 					!["stage", "preview", "apply"].includes(body.action) ||
 					!field(body.roomId) ||
-					!field(body.targetDeviceId)
+					!field(body.sourceBotId) ||
+					!field(body.targetBotId)
 				)
 					fail(400, "Invalid transfer request");
-				const sourceHash = store.snapshot().devices.find((d) => d.id === auth.device.id)?.credentialHash;
+				const initial = store.snapshot();
+				const sourceHash = initial.devices.find((d) => d.id === auth.device.id)?.credentialHash;
+				const sourceBot = initial.bots.find((b) => b.id === body.sourceBotId);
+				const targetBot = initial.bots.find((b) => b.id === body.targetBotId);
+				const targetDeviceId = targetBot?.deviceId;
+				const roomMembers = membership(initial.rooms.find((r) => r.id === body.roomId)?.botIds ?? []);
 				const authorize = () => {
 					const state = store.snapshot();
 					const source = state.devices.find((d) => d.id === auth.device.id);
-					const target = state.devices.find((d) => d.id === body.targetDeviceId);
+					const target = state.devices.find((d) => d.id === targetDeviceId);
+					const currentSource = state.bots.find((b) => b.id === body.sourceBotId);
+					const currentTarget = state.bots.find((b) => b.id === body.targetBotId);
 					const room = state.rooms.find((r) => r.id === body.roomId && r.accountId === auth.account.id);
 					if (
 						!source ||
@@ -168,8 +189,17 @@ export async function installDeviceTransfers(options: Options) {
 						!target ||
 						target.accountId !== auth.account.id ||
 						!room ||
-						!room.deviceIds.includes(source.id) ||
-						!room.deviceIds.includes(target.id)
+						!currentSource?.enabled ||
+						!currentTarget?.enabled ||
+						currentSource.deviceId !== source.id ||
+						currentTarget.deviceId !== target.id ||
+						currentSource.accountId !== auth.account.id ||
+						currentTarget.accountId !== auth.account.id ||
+						currentSource.revision !== sourceBot?.revision ||
+						currentTarget.revision !== targetBot?.revision ||
+						!room.botIds.includes(currentSource.id) ||
+						!room.botIds.includes(currentTarget.id) ||
+						membership(room.botIds) !== roomMembers
 					)
 						fail(403, "Transfer access denied");
 				};
@@ -186,9 +216,16 @@ export async function installDeviceTransfers(options: Options) {
 					if (receipts.filter((r) => r.expiresAt > Date.now()).length >= MAX_RECEIPTS)
 						fail(429, "Transfer receipt limit reached");
 					result = await options.relay.callDevice(
-						body.targetDeviceId,
+						targetDeviceId!,
 						"transfer_stage",
-						{ roomId: body.roomId, bundle: body.bundle },
+						{
+							roomId: body.roomId,
+							sourceBotId: body.sourceBotId,
+							targetBotId: body.targetBotId,
+							sourceBotRevision: sourceBot!.revision,
+							targetBotRevision: targetBot!.revision,
+							bundle: body.bundle,
+						},
 						{ signal: controller.signal },
 					);
 					controller.signal.throwIfAborted();
@@ -201,9 +238,13 @@ export async function installDeviceTransfers(options: Options) {
 						sourceDeviceId: auth.device.id,
 						accountId: auth.account.id,
 						roomId: body.roomId,
-						targetDeviceId: body.targetDeviceId,
+						targetDeviceId: targetDeviceId!,
+						sourceBotId: sourceBot!.id,
+						targetBotId: targetBot!.id,
+						sourceBotRevision: sourceBot!.revision,
+						targetBotRevision: targetBot!.revision,
 						localTransferId: localId,
-						roomMembers: membership(store.snapshot().rooms.find((r) => r.id === body.roomId)!.deviceIds),
+						roomMembers,
 						expiresAt: Date.now() + TTL,
 					};
 					await transact((draft) => {
@@ -220,8 +261,12 @@ export async function installDeviceTransfers(options: Options) {
 							r.sourceDeviceId === auth.device.id &&
 							r.accountId === auth.account.id &&
 							r.roomId === body.roomId &&
-							r.targetDeviceId === body.targetDeviceId &&
-							r.roomMembers === membership(store.snapshot().rooms.find((room) => room.id === body.roomId)!.deviceIds),
+							r.targetDeviceId === targetDeviceId &&
+							r.sourceBotId === sourceBot!.id &&
+							r.targetBotId === targetBot!.id &&
+							r.sourceBotRevision === sourceBot!.revision &&
+							r.targetBotRevision === targetBot!.revision &&
+							r.roomMembers === roomMembers,
 					);
 					if (!found) fail(403, "Transfer access denied");
 					receipt = { ...found };
@@ -247,6 +292,10 @@ export async function installDeviceTransfers(options: Options) {
 						body.action === "apply" ? "transfer_apply" : "transfer_preview",
 						{
 							roomId: receipt.roomId,
+							sourceBotId: receipt.sourceBotId,
+							targetBotId: receipt.targetBotId,
+							sourceBotRevision: receipt.sourceBotRevision,
+							targetBotRevision: receipt.targetBotRevision,
 							transferId: receipt.localTransferId,
 							...(body.action === "apply" ? { revision: body.revision, overwritePaths: body.overwritePaths } : {}),
 						},

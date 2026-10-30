@@ -27,6 +27,7 @@ export interface DeviceConnectorOptions {
 	onTask?: (task: any, signal?: AbortSignal) => unknown | Promise<unknown>;
 	/** Parent disposes its executor; the next task after reconnect must create a fresh executor. */
 	onDisconnect?: () => void;
+	onConnect?: () => void | Promise<void>;
 	onCommand?: (action: DeviceCommand, payload: unknown, signal: AbortSignal) => Promise<unknown>;
 }
 export function createDeviceConnector(options: DeviceConnectorOptions) {
@@ -130,6 +131,9 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 			tasksDisabled = false;
 			runningTasks.clear();
 			lastPong = Date.now();
+			void Promise.resolve()
+				.then(() => options.onConnect?.())
+				.catch(() => ws.close(1011, "Bot sync failed"));
 		});
 		ws.on("pong", () => {
 			lastPong = Date.now();
@@ -146,6 +150,11 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 						!task ||
 						typeof task.id !== "string" ||
 						typeof task.attemptId !== "string" ||
+						typeof task.botId !== "string" ||
+						!task.botId ||
+						!Number.isSafeInteger(task.botRevision) ||
+						task.botRevision < 1 ||
+						task.deviceId !== options.deviceId ||
 						runningTasks.has(task.id) ||
 						runningTasks.size >= RELAY_LIMITS.streams
 					)
@@ -158,6 +167,7 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 							sendFrame(ws, {
 								type: "task_event",
 								taskId: task.id,
+								botId: task.botId,
 								attemptId: task.attemptId,
 								status,
 								...(report ? { report: report.slice(0, 16_000) } : {}),

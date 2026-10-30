@@ -4,11 +4,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeviceHubStore, hashSecret, isTerminal, publicDevice, secretMatches } from "./store.js";
-import type { HubTask, Handoff, TaskStatus } from "./store.js";
+import type { HubTask, Handoff, TaskStatus, HubState } from "./store.js";
 import { createAccountAuth, hashPassword, verifyPassword, SESSION_TTL, HubRateLimiter } from "./hub-auth.js";
 import type { DevicePortals } from "./device-portals.js";
 
 export interface HubTaskEvent {
+	botId: string;
 	taskId: string;
 	attemptId: string;
 	status: TaskStatus;
@@ -55,7 +56,7 @@ function ids(value: unknown): string[] {
 		value.some((id) => typeof id !== "string" || id.length > 128) ||
 		new Set(value).size !== value.length
 	)
-		fail(400, "Invalid deviceIds");
+		fail(400, "Invalid botIds");
 	return value as string[];
 }
 function handoff(value: unknown): Handoff | undefined {
@@ -142,7 +143,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		if (req.method === "POST" && !agentWrites.allow("user:" + device.id)) fail(429, "Too many user writes");
 		const suffix = req.path.slice("/api/device-user".length);
 		if (!(
-			(req.method === "GET" && (["/devices", "/rooms"].includes(suffix) || /^\/rooms\/[^/]+$/.test(suffix))) ||
+			(req.method === "GET" && (["/devices", "/bots", "/rooms"].includes(suffix) || /^\/rooms\/[^/]+$/.test(suffix))) ||
 			(req.method === "POST" &&
 				(suffix === "/rooms" ||
 					/^\/rooms\/[^/]+\/(messages|rename|members|delete)$/.test(suffix) ||
@@ -157,15 +158,17 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		if (!req.path.startsWith("/api/agent/")) return next();
 		const agent = await authenticateAgent(req);
 		if (!agent) fail(401, "Device authentication required");
-		if (req.method === "POST" && !agentWrites.allow(agent.device.id)) fail(429, "Too many device writes");
+		if (["POST", "PUT"].includes(req.method) && !agentWrites.allow(agent.device.id))
+			fail(429, "Too many device writes");
 		agents.set(req, agent);
 		const suffix = req.path.slice("/api/agent".length);
 		if (
-			(req.method === "GET" && (["/devices", "/rooms"].includes(suffix) || /^\/rooms\/[^/]+$/.test(suffix))) ||
+			(req.method === "GET" && (["/devices", "/bots", "/rooms"].includes(suffix) || /^\/rooms\/[^/]+$/.test(suffix))) ||
 			(req.method === "POST" && (suffix === "/rooms" || /^\/rooms\/[^/]+\/messages$/.test(suffix)))
 		)
 			req.url = req.url.replace("/api/agent/", "/api/");
-		else if (suffix !== "/transfers" || req.method !== "POST") fail(404, "Agent route missing");
+		else if (!((suffix === "/transfers" && req.method === "POST") || (suffix === "/bots" && req.method === "PUT")))
+			fail(404, "Agent route missing");
 		next();
 	});
 	app.use((req, res, next) => {
@@ -346,7 +349,9 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 			if (!draft.devices.some((device) => device.id === id && device.accountId === owner.id))
 				fail(404, "Device missing");
 			draft.devices = draft.devices.filter((device) => device.id !== id);
-			for (const room of draft.rooms) room.deviceIds = room.deviceIds.filter((deviceId) => deviceId !== id);
+			const removedBots = new Set(draft.bots.filter((b) => b.deviceId === id).map((b) => b.id));
+			draft.bots = draft.bots.filter((b) => b.deviceId !== id);
+			for (const room of draft.rooms) room.botIds = room.botIds.filter((botId) => !removedBots.has(botId));
 			for (const task of draft.tasks)
 				if (task.deviceId === id && !isTerminal(task.status)) {
 					task.status = "interrupted";
@@ -358,42 +363,155 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		await options.portals?.retire(id);
 		res.json({ ok: true });
 	});
+	function ownBot(req: Request, state: HubState) {
+		const agent = agents.get(req);
+		if (!agent) return undefined;
+		const bot = state.bots.find(
+			(b) =>
+				b.id === req.body?.sourceBotId &&
+				b.deviceId === agent.device.id &&
+				b.accountId === agent.account.id &&
+				b.enabled,
+		);
+		if (!bot || !state.devices.some((d) => d.id === bot.deviceId && d.accountId === bot.accountId))
+			fail(403, "Source Bot access denied");
+		return bot;
+	}
+	const validBot = (state: HubState, id: string, accountId: string) =>
+		state.bots.find(
+			(b) =>
+				b.id === id &&
+				b.accountId === accountId &&
+				b.enabled &&
+				state.devices.some((d) => d.id === b.deviceId && d.accountId === accountId),
+		);
+	app.get("/api/bots", (req, res) => {
+		const owner = account(req);
+		res.json({
+			bots: store
+				.snapshot()
+				.bots.filter((b) => b.accountId === owner.id)
+				.map((b) => ({ ...b, online: options.isOnline?.(b.deviceId) ?? false })),
+		});
+	});
+	app.put("/api/agent/bots", async (req, res) => {
+		const owner = account(req);
+		const device = agents.get(req)!.device;
+		const rows = req.body?.bots;
+		if (!Array.isArray(rows) || rows.length > 128 || new Set(rows.map((b) => b?.id)).size !== rows.length)
+			fail(400, "Invalid Bots");
+		const incoming = rows.map((b) => {
+			const id = text(b?.id, 128),
+				name = text(b?.name, 128);
+			if (
+				typeof b?.description !== "string" ||
+				Buffer.byteLength(b.description) > 2048 ||
+				typeof b.enabled !== "boolean" ||
+				!Number.isSafeInteger(b.revision) ||
+				b.revision < 1
+			)
+				fail(400, "Invalid Bot registration");
+			return { id, name, description: b.description, enabled: b.enabled, revision: b.revision };
+		});
+		const bots = await store.transact((draft) => {
+			if (!draft.devices.some((d) => d.id === device.id && d.accountId === owner.id)) fail(401, "Device revoked");
+			if (
+				draft.tasks.some(
+					(task) =>
+						task.deviceId === device.id &&
+						!isTerminal(task.status) &&
+						!incoming.some((bot) => bot.id === task.botId && bot.enabled && bot.revision === task.botRevision),
+				)
+			)
+				throw Object.assign(new Error("Stop active Bot tasks before changing registration"), {
+					status: 409,
+					code: "ACTIVE_TASKS",
+				});
+			for (const row of incoming) {
+				const previous = draft.bots.find((b) => b.id === row.id);
+				if (previous && (previous.deviceId !== device.id || previous.accountId !== owner.id))
+					fail(403, "Bot belongs to another device");
+				if (
+					previous &&
+					(row.revision < previous.revision ||
+						(row.revision === previous.revision &&
+							["name", "description", "enabled"].some(
+								(k) => previous[k as keyof typeof previous] !== row[k as keyof typeof row],
+							)))
+				)
+					fail(409, "Bot revision is stale");
+				if (previous) Object.assign(previous, row, { updatedAt: Date.now() });
+				else
+					draft.bots.push({
+						...row,
+						deviceId: device.id,
+						accountId: owner.id,
+						createdAt: Date.now(),
+						updatedAt: Date.now(),
+					});
+			}
+			for (const bot of draft.bots)
+				if (bot.deviceId === device.id && !incoming.some((b) => b.id === bot.id)) {
+					bot.enabled = false;
+					bot.updatedAt = Date.now();
+				}
+			return draft.bots.filter((b) => b.deviceId === device.id);
+		});
+		res.json({ bots });
+	});
 	app.get("/api/rooms", (req, res) =>
 		res.json({
 			rooms: store
 				.snapshot()
 				.rooms.filter(
-					(room) =>
-						room.accountId === account(req).id &&
-						(!users.has(req) || room.deviceIds.includes(users.get(req)!.device.id)),
+					(r) =>
+						r.accountId === account(req).id &&
+						(!agents.has(req) ||
+							store
+								.snapshot()
+								.bots.some(
+									(b) =>
+										b.enabled &&
+										b.deviceId === agents.get(req)!.device.id &&
+										b.accountId === r.accountId &&
+										r.botIds.includes(b.id),
+								)),
 				),
 		}),
 	);
 	app.post("/api/rooms", async (req, res) => {
-		const owner = account(req);
-		const name = text(req.body?.name, 128);
-		const deviceIds = ids(req.body?.deviceIds ?? []);
+		const owner = account(req),
+			name = text(req.body?.name, 128),
+			botIds = ids(req.body?.botIds ?? []);
 		const room = await store.transact((draft) => {
-			const source = (agents.get(req) ?? users.get(req))?.device;
-			if (users.has(req) && source && !deviceIds.includes(source.id)) deviceIds.push(source.id);
-			if (source && !draft.devices.some((d) => d.id === source.id && d.accountId === owner.id))
-				fail(401, "Device revoked");
+			const source = ownBot(req, draft);
+			if (source && !botIds.includes(source.id)) fail(403, "Source Bot must be a member");
+			if (!botIds.length || botIds.some((id) => !validBot(draft, id, owner.id))) fail(400, "Invalid room Bot");
 			if (draft.rooms.filter((r) => r.accountId === owner.id).length >= 100) fail(409, "Room capacity reached");
-			if (deviceIds.some((id) => !draft.devices.some((device) => device.id === id && device.accountId === owner.id)))
-				fail(400, "Invalid room member");
-			const room = { id: randomUUID(), accountId: owner.id, name, deviceIds, createdAt: Date.now() };
+			const room = { id: randomUUID(), accountId: owner.id, name, botIds, createdAt: Date.now() };
 			draft.rooms.push(room);
 			return room;
 		});
 		res.status(201).json({ room });
 	});
 	app.get("/api/rooms/:id", (req, res) => {
-		const owner = account(req);
-		const state = store.snapshot();
-		const room = state.rooms.find((r) => r.id === req.params.id && r.accountId === owner.id);
-		if (!room || (users.has(req) && !room.deviceIds.includes(users.get(req)!.device.id))) fail(404, "Room missing");
+		const state = store.snapshot(),
+			room = state.rooms.find((r) => r.id === req.params.id && r.accountId === account(req).id);
+		if (
+			!room ||
+			(agents.has(req) &&
+				!state.bots.some(
+					(b) =>
+						b.enabled &&
+						b.deviceId === agents.get(req)!.device.id &&
+						b.accountId === room.accountId &&
+						room.botIds.includes(b.id),
+				))
+		)
+			fail(404, "Room missing");
 		res.json({
 			room,
+			bots: state.bots.filter((b) => room.botIds.includes(b.id) && b.accountId === room.accountId),
 			messages: state.messages.filter((m) => m.roomId === room.id),
 			tasks: state.tasks.filter((t) => t.roomId === room.id),
 		});
@@ -401,24 +519,19 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 	for (const operation of ["rename", "members", "delete"] as const) {
 		app.post(`/api/rooms/:id/${operation}`, async (req, res) => {
 			const owner = account(req);
-			const source = users.get(req)?.device;
 			const result = await store.transact((draft) => {
 				const room = draft.rooms.find((r) => r.id === req.params.id && r.accountId === owner.id);
-				if (!room || (source && !room.deviceIds.includes(source.id))) fail(404, "Room missing");
-				if (source && !draft.devices.some((d) => d.id === source.id && d.accountId === owner.id))
-					fail(401, "Device revoked");
+				if (!room) fail(404, "Room missing");
 				if (operation === "rename") room.name = text(req.body?.name, 128);
 				if (operation === "members") {
-					const members = ids(req.body?.deviceIds);
-					if (source && !members.includes(source.id)) members.push(source.id);
-					if (members.some((id) => !draft.devices.some((d) => d.id === id && d.accountId === owner.id)))
-						fail(400, "Invalid room member");
-					if (draft.tasks.some((t) => t.roomId === room.id && !isTerminal(t.status) && !members.includes(t.deviceId)))
-						throw Object.assign(new Error("Stop removed members' active tasks first"), {
+					const members = ids(req.body?.botIds);
+					if (!members.length || members.some((id) => !validBot(draft, id, owner.id))) fail(400, "Invalid room Bot");
+					if (draft.tasks.some((t) => t.roomId === room.id && !isTerminal(t.status) && !members.includes(t.botId)))
+						throw Object.assign(new Error("Stop removed Bots' active tasks first"), {
 							status: 409,
 							code: "ACTIVE_TASKS",
 						});
-					room.deviceIds = members;
+					room.botIds = members;
 				}
 				if (operation === "delete") {
 					if (draft.tasks.some((t) => t.roomId === room.id && !isTerminal(t.status)))
@@ -440,7 +553,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 	app.post("/api/rooms/:id/messages", async (req, res) => {
 		const owner = account(req);
 		const content = text(req.body?.text);
-		const targets = ids(req.body?.targetDeviceIds ?? []);
+		const targets = ids(req.body?.targetBotIds ?? []);
 		const transfer = handoff(req.body?.handoff);
 		const parentTaskId = req.body?.parentTaskId === undefined ? undefined : text(req.body.parentTaskId, 128);
 		const key = req.body?.idempotencyKey === undefined ? randomUUID() : text(req.body.idempotencyKey, 128);
@@ -451,27 +564,18 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				transfer,
 				parentTaskId,
 				sourceDeviceId: (agents.get(req) ?? users.get(req))?.device.id,
-				senderType: agents.has(req) ? "device" : "human",
+				sourceBotId: agents.has(req) ? req.body?.sourceBotId : undefined,
+				senderType: agents.has(req) ? "bot" : "human",
 			}),
 		);
 		const result = await store.transact((draft) => {
 			const room = draft.rooms.find((r) => r.id === req.params.id && r.accountId === owner.id);
 			if (!room) fail(404, "Room missing");
-			const source = agents.get(req)?.device;
+			const source = ownBot(req, draft);
 			const userSource = users.get(req)?.device;
-			const member = source ?? userSource;
-			if (
-				member &&
-				(!room.deviceIds.includes(member.id) ||
-					!draft.devices.some((d) => d.id === member.id && d.accountId === owner.id))
-			)
-				fail(403, "Source device is not a room member");
-			if (
-				targets.some(
-					(id) => !room.deviceIds.includes(id) || !draft.devices.some((d) => d.id === id && d.accountId === owner.id),
-				)
-			)
-				fail(400, "Invalid target device");
+			if (source && !room.botIds.includes(source.id)) fail(403, "Source Bot is not a room member");
+			if (targets.some((id) => !room.botIds.includes(id) || !validBot(draft, id, owner.id)))
+				fail(400, "Invalid target Bot");
 			const receipt = draft.receipts.find((r) => r.roomId === room.id && r.accountId === owner.id && r.key === key);
 			if (receipt) {
 				if (receipt.fingerprint !== fingerprint) fail(409, "Idempotency key reused");
@@ -490,12 +594,12 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 						t.id === parentTaskId &&
 						t.roomId === room.id &&
 						t.accountId === owner.id &&
-						(isTerminal(t.status) || (source?.id === t.deviceId && t.status === "running")),
+						(isTerminal(t.status) || (source?.id === t.botId && t.status === "running")),
 				)
 			)
 				fail(400, "Parent task must be terminal or the source device's running task in this room");
 			const parent = parentTaskId ? draft.tasks.find((t) => t.id === parentTaskId) : undefined;
-			if (source && targets.length && (!parent || parent.deviceId !== source.id))
+			if (source && targets.length && (!parent || parent.botId !== source.id))
 				fail(400, "Device dispatch requires its own running or terminal parent task");
 			const root = parent ? draft.tasks.find((t) => t.id === (parent.rootTaskId ?? parent.id)) : undefined;
 			if (parent && targets.length && !root) fail(409, "Dispatch root expired");
@@ -507,7 +611,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				fail(409, "Too many active tasks");
 			const now = Date.now();
 			const rootId = root?.id ?? randomUUID();
-			const tasks: HubTask[] = targets.map((deviceId, index) => ({
+			const tasks: HubTask[] = targets.map((botId, index) => ({
 				id: !root && index === 0 ? rootId : randomUUID(),
 				rootTaskId: rootId,
 				dispatchDepth: depth,
@@ -515,7 +619,10 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				attemptId: randomUUID(),
 				roomId: room.id,
 				accountId: owner.id,
-				deviceId,
+				botId,
+				deviceId: validBot(draft, botId, owner.id)!.deviceId,
+				botRevision: validBot(draft, botId, owner.id)!.revision,
+				...(source ? { sourceBotId: source.id } : {}),
 				text: content,
 				status: "queued",
 				createdAt: now,
@@ -529,7 +636,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				accountId: owner.id,
 				text: content,
 				sender: source
-					? { type: "device" as const, id: source.id, name: source.name }
+					? { type: "bot" as const, id: source.id, name: source.name, sourceDeviceId: source.deviceId }
 					: {
 							type: "human" as const,
 							id: owner.id,
@@ -538,7 +645,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 						},
 				createdAt: now,
 				taskIds: tasks.map((t) => t.id),
-				targetDeviceIds: targets,
+				targetBotIds: targets,
 			};
 			draft.tasks.push(...tasks);
 			draft.messages.push(message);
@@ -560,6 +667,12 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 			for (const task of result.tasks) {
 				const deliver = options.onTask ?? options.relay?.onTask;
 				try {
+					const latest = store.snapshot();
+					if (
+						validBot(latest, task.botId, task.accountId)?.revision !== task.botRevision ||
+						!latest.rooms.some((r) => r.id === task.roomId && r.botIds.includes(task.botId))
+					)
+						throw new Error("Bot no longer available");
 					if (!deliver || (await deliver(task.deviceId, task)) === false) throw new Error("Delivery rejected");
 				} catch {
 					await store.transact((draft) => {
@@ -575,9 +688,10 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 							accountId: current.accountId,
 							text: report,
 							sender: {
-								type: "device",
-								id: current.deviceId,
-								name: draft.devices.find((device) => device.id === current.deviceId)?.name ?? current.deviceId,
+								type: "bot",
+								id: current.botId,
+								name: draft.bots.find((bot) => bot.id === current.botId)?.name ?? current.botId,
+								sourceDeviceId: current.deviceId,
 							},
 							createdAt: current.updatedAt,
 							taskIds: [current.id],
@@ -685,6 +799,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 			!event ||
 			typeof event.taskId !== "string" ||
 			typeof event.attemptId !== "string" ||
+			typeof event.botId !== "string" ||
 			!["running", "completed", "failed", "interrupted"].includes(event.status)
 		)
 			fail(400, "Invalid task event");
@@ -696,10 +811,17 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 				(t) =>
 					t.id === event.taskId &&
 					t.deviceId === deviceId &&
+					t.botId === event.botId &&
 					t.attemptId === event.attemptId &&
 					t.accountId === device?.accountId,
 			);
-			if (!task || !device) fail(404, "Task missing");
+			const bot = draft.bots.find(
+				(b) => b.id === event.botId && b.deviceId === deviceId && b.accountId === device?.accountId,
+			);
+			if (!task || !device || !bot || !draft.rooms.some((r) => r.id === task.roomId && r.botIds.includes(bot.id)))
+				fail(404, "Task missing");
+			if (event.status !== "interrupted" && (!bot.enabled || bot.revision !== task.botRevision))
+				fail(409, "Bot configuration changed");
 			if (task.status === event.status) {
 				if (task.report !== report) fail(409, "Conflicting duplicate event");
 				return task;
@@ -719,7 +841,7 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 					roomId: task.roomId,
 					accountId: task.accountId,
 					text: report,
-					sender: { type: "device", id: deviceId, name: device.name },
+					sender: { type: "bot", id: bot.id, name: bot.name, sourceDeviceId: deviceId },
 					createdAt: Date.now(),
 					taskIds: [task.id],
 				});

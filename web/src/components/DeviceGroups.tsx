@@ -5,8 +5,8 @@ import { appUrl } from "../base-url";
 import { withToken } from "../auth-token";
 import { isZhLocale, useI18n } from "../i18n";
 
-type Device = { id: string; name: string; online?: boolean };
-type Room = { id: string; name: string; deviceIds: string[] };
+type Device = { id: string; deviceId: string; name: string; enabled: boolean; online?: boolean };
+type Room = { id: string; name: string; botIds: string[] };
 type Detail = { room: Room };
 const words = {
 	zh: {
@@ -15,7 +15,7 @@ const words = {
 		save: "保存成员",
 		create: "建群",
 		name: "群名称",
-		devices: "选择设备（自动包含本机）",
+		devices: "选择 Bot（设备仅承载 Bot）",
 		empty: "还没有群聊，创建一个群开始协作。",
 		choose: "选择一个群聊",
 		open: "打开聊天",
@@ -33,7 +33,7 @@ const words = {
 		save: "Save members",
 		create: "Create group",
 		name: "Group name",
-		devices: "Select devices (this device is included automatically)",
+		devices: "Select Bots (devices host Bots)",
 		empty: "No groups yet. Create a group to collaborate.",
 		choose: "Select a group",
 		open: "Open chat",
@@ -150,19 +150,19 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 			controller = current;
 			try {
 				const [deviceData, roomData, next] = await Promise.all([
-					request<{ devices: Device[] }>("devices", current.signal),
+					request<{ bots: Device[] }>("bots", current.signal),
 					request<{ rooms: Room[] }>("rooms", current.signal),
 					managing && roomId
 						? request<Detail>(`rooms/${encodeURIComponent(roomId)}`, current.signal)
 						: Promise.resolve(null),
 				]);
 				if (!valid() || current.signal.aborted) return;
-				setDevices(deviceData.devices);
+				setDevices(deviceData.bots);
 				setRooms(roomData.rooms);
 				setDetail(next);
 				if (next && pendingManage.current === next.room.id) {
 					pendingManage.current = null;
-					setSelected(next.room.deviceIds);
+					setSelected(next.room.botIds);
 				}
 				setError("");
 			} catch (cause) {
@@ -212,7 +212,7 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 			const { room } = await request<{ room: Room }>(
 				isCreate ? "rooms" : `rooms/${encodeURIComponent(id!)}/members`,
 				controller.signal,
-				isCreate ? { name: name.trim(), deviceIds: selected } : { deviceIds: selected },
+				isCreate ? { name: name.trim(), botIds: selected } : { botIds: selected },
 			);
 			if (controller.signal.aborted || mutation.current !== controller) return;
 			setRooms((old) => [...old.filter((item) => item.id !== room.id), room]);
@@ -298,6 +298,7 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 								<label className="dg-device" key={device.id}>
 									<input
 										type="checkbox"
+										disabled={!device.enabled && !selected.includes(device.id)}
 										checked={selected.includes(device.id)}
 										onChange={(event) =>
 											setSelected((old) =>
@@ -307,7 +308,7 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 									/>
 									<FiMonitor />
 									<span>
-										{device.name} · {device.online ? w.online : w.offline}
+										{device.name} · {device.id} · {device.deviceId} · {device.online ? w.online : w.offline}
 									</span>
 								</label>
 							))}

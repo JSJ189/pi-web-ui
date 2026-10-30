@@ -23,7 +23,21 @@ export interface Device {
 	uiCredentialHash?: string;
 	createdAt: number;
 }
+export interface Bot {
+	id: string;
+	deviceId: string;
+	accountId: string;
+	name: string;
+	description: string;
+	enabled: boolean;
+	revision: number;
+	createdAt: number;
+	updatedAt: number;
+}
 export interface HubTask {
+	botId: string;
+	botRevision: number;
+	sourceBotId?: string;
 	id: string;
 	attemptId: string;
 	roomId: string;
@@ -44,7 +58,7 @@ export interface Room {
 	id: string;
 	accountId: string;
 	name: string;
-	deviceIds: string[];
+	botIds: string[];
 	createdAt: number;
 }
 export interface RoomMessage {
@@ -52,15 +66,16 @@ export interface RoomMessage {
 	roomId: string;
 	accountId: string;
 	text: string;
-	sender: { type: "human" | "device"; id: string; name: string; sourceDeviceId?: string };
+	sender: { type: "human" | "bot"; id: string; name: string; sourceDeviceId?: string };
 	createdAt: number;
 	taskIds: string[];
-	targetDeviceIds?: string[];
+	targetBotIds?: string[];
 }
 export interface HubState {
-	version: 1;
+	version: 2;
 	accounts: Account[];
 	devices: Device[];
+	bots: Bot[];
 	sessions: { hash: string; accountId: string; expiresAt: number }[];
 	rooms: Room[];
 	messages: RoomMessage[];
@@ -94,10 +109,11 @@ export class DeviceHubStore {
 		try {
 			state = JSON.parse(await readFile(join(dataDir, "device-hub.json"), "utf8"));
 			if (
-				state.version !== 1 ||
+				state.version !== 2 ||
 				![
 					state.accounts,
 					state.devices,
+					state.bots,
 					state.sessions,
 					state.rooms,
 					state.messages,
@@ -109,7 +125,17 @@ export class DeviceHubStore {
 			}
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-			state = { version: 1, accounts: [], devices: [], sessions: [], rooms: [], messages: [], tasks: [], receipts: [] };
+			state = {
+				version: 2,
+				accounts: [],
+				devices: [],
+				bots: [],
+				sessions: [],
+				rooms: [],
+				messages: [],
+				tasks: [],
+				receipts: [],
+			};
 		}
 		const store = new DeviceHubStore(dataDir, state);
 		if (state.tasks.some((task) => task.status === "running")) {
