@@ -575,14 +575,14 @@ export function DeviceCenter({
 					)}
 					{bound && status?.hubUrl && status.deviceId && !localOnly && view !== "groups" && (
 						<DeviceDirectory
-							key={`${status.hubUrl}:${status.deviceId}`}
+							key={`directory:${status.hubUrl}:${status.deviceId}`}
 							hubUrl={status.hubUrl}
 							currentDeviceId={status.deviceId}
 						/>
 					)}
 					{!localOnly && (view === "settings" || view === "groups") && (
 						<LocalBots
-							key={`${status?.hubUrl ?? ""}:${status?.deviceId ?? "unpaired"}`}
+							key={`bots:${status?.hubUrl ?? ""}:${status?.deviceId ?? "unpaired"}`}
 							pathCompletions={pathCompletions}
 						/>
 					)}

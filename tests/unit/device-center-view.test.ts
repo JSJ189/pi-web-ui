@@ -72,6 +72,39 @@ describe("native device workspace", () => {
 		expect(toggle.getAttribute("aria-checked")).toBe("false");
 		expect(page.querySelector('[role="alert"]')?.textContent).toContain("权限保存失败");
 	});
+	it("keeps a single device directory when alternating settings and groups", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url) => {
+				const path = String(url).split("?")[0];
+				if (path.endsWith("/devices")) return response({ devices: [{ id: "mac", name: "Mac", online: true }] });
+				if (path.endsWith("/local-bots")) return response({ bots: [] });
+				if (path.endsWith("/rooms")) return response({ rooms: [] });
+				if (path.endsWith("/bots")) return response({ bots: [] });
+				return response({
+					name: "Mac",
+					deviceId: "mac",
+					hubUrl: "https://hub.example.com",
+					allowExecution: false,
+					connected: true,
+				});
+			}),
+		);
+		const page = await mount();
+		const sections = () => page.querySelectorAll('section[aria-label="所有设备"]');
+		expect(sections()).toHaveLength(1);
+		for (let index = 0; index < 8; index++) {
+			await act(async () => page.querySelectorAll<HTMLButtonElement>(".dc-nav-item")[2].click());
+			expect(sections()).toHaveLength(1);
+			expect(page.querySelectorAll(".dc-bots")).toHaveLength(1);
+			await act(async () => page.querySelectorAll<HTMLButtonElement>(".dc-nav-item")[1].click());
+			expect(sections()).toHaveLength(0);
+			expect(page.querySelectorAll(".dc-bots")).toHaveLength(1);
+			await act(async () => page.querySelectorAll<HTMLButtonElement>(".dc-nav-item")[0].click());
+			expect(sections()).toHaveLength(1);
+			expect(page.querySelectorAll(".dc-bots")).toHaveLength(0);
+		}
+	});
 	it("aborts an in-flight request on unmount", async () => {
 		let signal: AbortSignal | undefined;
 		vi.stubGlobal(
