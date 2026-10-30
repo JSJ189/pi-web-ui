@@ -4,7 +4,7 @@
 // 工具调用，第二回合把工具结果原样回显成 assistant 文本 —— 整条链路不需要真模型。
 //
 // 验证：
-//   1. 模型调 ask_user_question → question_pending（id + questions 透传）
+//   1. 模型调 ask_user_question → question_queue（id + questions 透传）
 //   2. 快照携带 pendingQuestion（UiState）→ 重连/刷新能恢复对话框
 //      （第二个同 clientId 的连接 = 刷新页面；它的首帧快照必须带回问卷）
 //   3. 【本测试的核心】问卷豁免工具挂死看门狗：PI_WEB_TOOL_TIMEOUT_MS=2000，
@@ -15,7 +15,7 @@
 //   5. 回答 → 工具结果回到模型（回显文本含所选 label 与自定义文本），
 //      快照的 pendingQuestion 清空
 //
-// 用法: npm run build && node tests/question-bridge-test.mjs
+// 用法: node tests/question-bridge-test.mjs（已有构建时设置 PI_WEB_SMOKE_PREBUILT=1）
 import { createServer } from "node:http";
 import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,6 +25,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import { freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
+
+const repoRoot = realpathSync(new URL("../", import.meta.url));
+ensureBuild(repoRoot, "question-bridge-test");
 
 const PORT = Number(process.argv[2] || 8985);
 const MOCK_PORT = PORT + 1;
@@ -153,12 +157,13 @@ writeFileSync(
 	}),
 );
 
-const repoRoot = realpathSync(new URL("../", import.meta.url));
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	cwd: repoRoot,
 	env: {
 		...process.env,
 		PI_WEB_PORT: String(PORT),
+		PI_WEB_SDK: "bundled",
+		PI_WEB_TOKEN: "",
 		// 本测试只验其它功能；工具延迟加载默认开会让非核心工具不活跃，这里按部署默认关掉它。
 		PI_WEB_TOOL_LAZY_LOADING: "0",
 		PI_WEB_DATA_DIR: dataDir,
@@ -268,9 +273,14 @@ try {
 	await a.waitForState((s) => s.model?.id === MODEL_ID);
 
 	a.send({ type: "prompt", text: "先问我几个问题" });
-	const pending = await a.waitForType("question_pending", () => true, 40000);
+	const queue = await a.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.conversationId === a.state.conversationId && q.audience === "user"),
+		40000,
+	);
+	const pending = queue.questions.find((q) => q.conversationId === a.state.conversationId && q.audience === "user");
 	check(
-		"模型 ask_user_question → question_pending（题目透传）",
+		"模型 ask_user_question → question_queue（题目透传）",
 		pending.questions?.[0]?.id === "scope" && pending.questions?.[1]?.id === "note",
 		`id=${pending.id} n=${pending.questions?.length}`,
 	);
@@ -278,7 +288,7 @@ try {
 	// 快照侧的事实源：重连的客户端靠它恢复对话框。
 	const stateWithQuestion = await a.waitForState((s) => s.pendingQuestion?.id === pending.id, 10000);
 	check(
-		"快照携带 pendingQuestion（id/题目与 question_pending 一致）",
+		"快照携带 pendingQuestion（id/题目与 question_queue 一致）",
 		stateWithQuestion.pendingQuestion.questions?.length === 2,
 		JSON.stringify(stateWithQuestion.pendingQuestion.questions?.map((q) => q.id)),
 	);
@@ -335,6 +345,8 @@ try {
 			{ id: "note", selected: [], custom: "别动图标" },
 		],
 	});
+	await a.waitForType("question_queue", (m) => !m.questions.some((q) => q.id === pending.id), 30000);
+	check("回答后问卷从项目队列移除", true);
 	const done = await a.waitForState(
 		// 等到第二回合（模型看到工具结果）真的落盘：仅看 isStreaming=false 会在
 		// 「工具结束→下一次请求」的空隙提前返回。

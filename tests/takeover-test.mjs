@@ -30,6 +30,10 @@ import { spawn } from "node:child_process";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
 import { freePort } from "./lib/port-utils.mjs";
+import { ensureBuild } from "./lib/ensure-build.mjs";
+
+const repoRoot = realpathSync(new URL("../", import.meta.url));
+ensureBuild(repoRoot, "takeover-test");
 
 const PORT = Number(process.argv[2] || 8987);
 const MOCK_PORT = PORT + 1;
@@ -158,7 +162,6 @@ writeFileSync(
 	}),
 );
 
-const repoRoot = realpathSync(new URL("../", import.meta.url));
 const server = spawn(process.execPath, ["dist/server/index.js"], {
 	cwd: repoRoot,
 	env: {
@@ -233,7 +236,9 @@ class Client {
 			}
 			await sleep(50);
 		}
-		throw new Error(`[${this.name}] timeout waiting for ${type}`);
+		throw new Error(
+			`[${this.name}] timeout waiting for ${type}; conversation=${this.state?.conversationId}; pendingQuestion=${this.state?.pendingQuestion?.id}; notices=${JSON.stringify(this.notices())}`,
+		);
 	}
 	async waitForState(predicate, timeout = 20000) {
 		const started = Date.now();
@@ -291,7 +296,12 @@ try {
 	// A：提问挂起（run 阻塞在等人类回答，streaming 中）。
 	clientA = await openClient("takeover-A");
 	clientA.send({ type: "prompt", text: "先问我几个问题" });
-	const pendingA = await clientA.waitForType("question_pending", () => true, 40000);
+	const queueA = await clientA.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.owner === "takeover-A" && q.audience === "user"),
+		40000,
+	);
+	const pendingA = queueA.questions.find((q) => q.owner === "takeover-A" && q.audience === "user");
 	check("A 问卷挂起", pendingA.questions?.length === 2, `id=${pendingA.id}`);
 	await clientA.waitForState((s) => s.isStreaming === true, 15000);
 	const convA = clientA.state.conversationId;
@@ -317,10 +327,14 @@ try {
 
 	// B 右键过户（A 在线也不拦：搬 runtime，单 writer 不变）。
 	clientB.send({ type: "take_over_conversation", owner: row.owner, id: row.convId });
-	const pendingB = await clientB.waitForType("question_pending", (m) => m.questions?.length === 2, 20000);
-	check("问卷在 B 页重新弹出（同题目）", pendingB.questions?.[0]?.id === "scope", `newId=${pendingB.id}`);
-	// 问卷 id 是会话内作用域（两边计数器都从 q-1 起，撞号正常）；真正的转移证据是
-	// A 页不再挂起同一张问卷（搬走，不是复制）。
+	const queueB = await clientB.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.id === pendingA.id && q.owner === "takeover-B"),
+		20000,
+	);
+	const pendingB = queueB.questions.find((q) => q.id === pendingA.id);
+	check("问卷队列保留原请求并更新持有方 B", pendingB.questions?.[0]?.id === "scope", `id=${pendingB.id}`);
+	// 过户保留请求 id；源页快照不再挂起，项目共享队列更新为目标持有方。
 	{
 		const started = Date.now();
 		let cleared = false;
@@ -362,10 +376,12 @@ try {
 		}
 		check("A 页该对话已消失", gone);
 	}
-	// 源页面的旧对话框必须是即时通道弹出的（live），快照为 null 收不掉 ——
-	// 服务端搬问卷时同步下发 question_retracted，源页凭它收起。
-	const retracted = await clientA.waitForType("question_retracted", (m) => m.id === pendingA.id, 15000);
-	check("A 页旧问卷被撤回（对话框收起）", retracted.id === pendingA.id, `id=${retracted.id}`);
+	const movedQueueA = await clientA.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.id === pendingA.id && q.owner === "takeover-B"),
+		15000,
+	);
+	check("A 项目队列同步问卷的新持有方", movedQueueA.questions.filter((q) => q.id === pendingA.id).length === 1);
 	check(
 		"A 收到去向通知",
 		clientA.notices().some((m) => (m.text ?? "").includes("过户到另一处")),
@@ -383,15 +399,23 @@ try {
 	});
 	// 过户之后模型再提问：这张问卷是**过户后**提出的，必须落在当前持有方 B ——
 	// 桥接工具里闭包捕获的是建 runtime 的那个 ClientSession（A），不是“现在谁持有”。
-	const pendingB2 = await clientB.waitForType("question_pending", (m) => m.id !== pendingB.id, 30000);
+	const queueB2 = await clientB.waitForType(
+		"question_queue",
+		(m) => m.questions.some((q) => q.id !== pendingB.id && q.owner === "takeover-B" && q.audience === "user"),
+		30000,
+	);
+	const pendingB2 = queueB2.questions.find(
+		(q) => q.id !== pendingB.id && q.owner === "takeover-B" && q.audience === "user",
+	);
 	check("过户后新问卷送达持有方 B", pendingB2.questions?.length === 2, `id=${pendingB2.id}`);
 	await clientB.waitForState((s) => s.pendingQuestion?.id === pendingB2.id, 15000);
 	check("过户后新问卷进 B 的快照（刷新/重连可恢复）", true);
 	{
-		// 给漂移留出窗口：A 页此刻不该再收到任何问卷（它已经不持有这条对话了）。
-		await sleep(2500);
-		const stray = clientA.received.find((m) => m.type === "question_pending");
-		check("新问卷没有误发给过户前的设备 A", !stray, stray ? `id=${stray.id}` : "无");
+		// 项目队列在 A 也可见，但持有方必须是 B，A 当前对话不能挂起它。
+		await clientA.waitForType("question_queue", (m) =>
+			m.questions.some((q) => q.id === pendingB2.id && q.owner === "takeover-B"),
+		);
+		check("新问卷没有挂到源页 A 当前对话", clientA.state?.pendingQuestion == null);
 	}
 	clientB.send({
 		type: "question_answer",
