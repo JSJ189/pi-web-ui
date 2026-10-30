@@ -233,8 +233,13 @@ try {
 			),
 		15000,
 	);
+	const resumedConversationId = client.state.conversationId;
 	client.send({ type: "switch_conversation", id: backgroundConversationId });
 	await client.waitForState((state) => state.conversationId === backgroundConversationId);
+	await client.waitForType("conversations", (message) =>
+		message.conversations.some((conversation) => conversation.id === resumedConversationId),
+	);
+	console.log("✓ deliberately resumed history stays listed when leaving without a prompt");
 	await client.waitForMessage(
 		(message) => message.role === "assistant" && JSON.stringify(message.content).includes("background-finished"),
 	);

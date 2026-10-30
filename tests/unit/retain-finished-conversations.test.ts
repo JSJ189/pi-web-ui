@@ -58,6 +58,43 @@ describe("retainFinishedConversations（结束的对话切换时不自动从运�
 		expect(displaced).toBe(conv);
 	});
 
+	it.each([false, true])("临时对话聊过后切走始终保留（listed=%s），不依赖全局开关或新消息", (listed) => {
+		const conv = fakeConv({
+			isEphemeral: true,
+			listed,
+			promptedSinceActive: false,
+			session: {
+				isStreaming: false,
+				isCompacting: false,
+				sessionFile: undefined,
+				getSessionStats: () => ({ totalMessages: 2 }),
+			},
+		});
+		const cs = makeCs({
+			conv,
+			activeId: "c1",
+			convs: new Map([["c1", conv]]),
+			settingsSvc: { current: { retainFinishedConversations: false } },
+		});
+
+		expect(priv("displaceActive").call(cs)).toBeNull();
+		expect(conv.listed).toBe(true);
+		// Revisiting resets promptedSinceActive; a second switch must still retain it.
+		expect(priv("displaceActive").call(cs)).toBeNull();
+	});
+
+	it("空白临时对话仍可自动回收", () => {
+		const conv = fakeConv({ isEphemeral: true });
+		const cs = makeCs({
+			conv,
+			activeId: "c1",
+			convs: new Map([["c1", conv]]),
+			settingsSvc: { current: { retainFinishedConversations: false } },
+		});
+
+		expect(priv("displaceActive").call(cs)).toBe(conv);
+	});
+
 	it("开关开启：空闲但有消息的会话切走时保留，且 listed 被置位", () => {
 		const conv = fakeConv({
 			title: "聊过的对话",

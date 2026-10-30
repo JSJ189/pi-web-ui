@@ -12593,8 +12593,11 @@ export class ClientSession {
 		// points at it: dropping an idle in-memory parent orphans the child row
 		// (the child vanishes from Running Chats with no result available).
 		const hasLiveChild = [...this.convs.values()].some((child) => child.parentId === conv.id);
+		// Ephemeral transcripts have no history fallback: once started, only an
+		// explicit close may discard them, even after revisiting without a prompt.
 		const retainFinished =
-			Boolean(this.settingsSvc?.current.retainFinishedConversations) && this.isConversationStarted(conv);
+			(Boolean(conv.isEphemeral) || Boolean(this.settingsSvc?.current.retainFinishedConversations)) &&
+			this.isConversationStarted(conv);
 		const retained =
 			hasLiveChild ||
 			retainFinished ||
@@ -14526,6 +14529,7 @@ export class ClientSession {
 			const conv = this.makeConversation(openedRuntime, conversationId, openedTerminals);
 			// Deliberately resumed — must not be dismissed when the user later
 			// switches away without sending a new message.
+			conv.listed = true;
 			conv.promptedSinceActive = true;
 			if (this.stateStore?.isSessionPinned(targetCwd, targetPath)) {
 				conv.pinned = true;

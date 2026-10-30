@@ -213,6 +213,22 @@ try {
 	check("临时对话出现在「运行的对话」并带 isEphemeral 标记", ephRow?.isEphemeral === true, JSON.stringify(ephRow));
 	check("临时对话行没有 sessionFile", !ephRow?.sessionFile, String(ephRow?.sessionFile));
 
+	// #793: idle ephemeral transcripts must survive switching away, including
+	// a revisit without sending a new prompt (promptedSinceActive is reset).
+	await waitFor(() => snapshot?.isStreaming === false, "ephemeral idle");
+	for (let i = 0; i < 2; i++) {
+		send({ type: "new_chat" });
+		await waitFor(() => snapshot?.conversationId !== ephId, "switch away from ephemeral");
+		check(
+			`切走后临时对话仍在运行列表（第 ${i + 1} 次）`,
+			conversations.some((c) => c.id === ephId && c.isEphemeral),
+		);
+		send({ type: "switch_conversation", id: ephId });
+		await waitFor(() => snapshot?.conversationId === ephId && hasReply("ephemeral"), "ephemeral restored");
+		check(`切回后临时对话内容仍在（第 ${i + 1} 次）`, hasReply("ephemeral"));
+	}
+	check("切换保留不会偷偷落盘", countSessionFiles() === beforeFiles);
+
 	// ── 2. 转正：persist_conversation ────────────────────────────────────
 	send({ type: "persist_conversation", id: ephId });
 	await waitFor(() => {
