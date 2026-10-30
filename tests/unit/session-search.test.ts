@@ -3,8 +3,17 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as fsPromises from "node:fs/promises";
 import * as fs from "node:fs";
 
-vi.mock("node:fs/promises", { spy: true });
-vi.mock("node:fs", { spy: true });
+vi.mock("node:fs/promises", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs/promises")>();
+	return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+vi.mock("node:fs", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:fs")>();
+	// Do not recursively spy on fs: Node 22's stream _construct checks the identity
+	// of ReadStream.prototype.open. Wrapping that no-op selects the legacy open()
+	// path, which never emits "open" and leaves every transcript read pending.
+	return { ...actual, createReadStream: vi.fn(actual.createReadStream) };
+});
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseSessionInfoFast } from "../../server/session-parser.js";

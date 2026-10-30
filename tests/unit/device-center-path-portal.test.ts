@@ -233,7 +233,7 @@ describe("single-port device path portal", () => {
 		const result = JSON.parse((await frame.locator("body").textContent())!);
 		expect(result).toEqual({ module: "loaded", opaque: true, fetch: true, ws: true, hubBlocked: true });
 		expect(f.hubHits()).toBe(0);
-		expect(page.url()).toContain("#s=synced");
+		await expect.poll(() => page.url()).toContain("#s=synced");
 		expect(frame.url()).toContain("#s=initial");
 		expect((await context.cookies()).find((cookie) => cookie.name === "hub")?.value).toBe("secret");
 		expect(f.received.every((headers) => !headers.cookie?.includes("hub=secret"))).toBe(true);

@@ -16,6 +16,8 @@ export default defineConfig({
 		// `npm run test:smoke` / 单独 node 运行。
 		include: ["tests/unit/**/*.test.ts"],
 		environment: "node",
+		// 浏览器、文件扫描与子进程用例共享 runner 资源，限制并发避免启动/计时互相挤占。
+		maxWorkers: 4,
 		setupFiles: ["tests/unit/setup-chrome-i18n.ts"],
 		silent: true,
 		onConsoleLog: () => false,

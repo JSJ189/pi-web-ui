@@ -1,11 +1,16 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { FeishuBotBridge } from "../../plugins/feishu/bot-bridge.mjs";
 import { createMedia } from "../../plugins/feishu/media.mjs";
 import { receiveAttachments } from "../../plugins/feishu/runtime.mjs";
 
+const projectWorkspace = join(tmpdir(), "feishu-project");
+const nextWorkspace = join(tmpdir(), "feishu-next");
+
 function setup() {
 	const host = {
-		cwd: "E:/project",
+		cwd: projectWorkspace,
 		chat: vi.fn(),
 		abortRun: vi.fn().mockResolvedValue({ ok: true }),
 		models: { list: vi.fn().mockResolvedValue([{ provider: "p", id: "m" }]) },
@@ -45,7 +50,7 @@ describe("Feishu runtime contracts", () => {
 		host.chat.mockImplementation(async () => ({ conversationId: `c${++n}`, runId: `r${n}` }));
 		await inbound();
 		const accounts = [host.chat.mock.calls.at(-1)?.[0].accountId];
-		for (const command of ["/new", "/clear", "/cwd E:/next"]) {
+		for (const command of ["/new", "/clear", `/cwd ${nextWorkspace}`]) {
 			await bridge.handleRunEvent({ type: "run_end", runId: `r${n}` });
 			await inbound(command);
 			await inbound();
@@ -53,6 +58,23 @@ describe("Feishu runtime contracts", () => {
 		}
 		expect(new Set(accounts).size).toBe(4);
 	});
+
+	it.each(["relative/project", "E:relative", ...(process.platform === "win32" ? [] : ["E:/next"])])(
+		"rejects non-absolute cwd %s without changing workspace or conversation identity",
+		async (workspace) => {
+			const { bridge, host, inbound, reply } = setup();
+			host.chat.mockResolvedValueOnce({ conversationId: "c1", runId: "r1" });
+			await inbound();
+			const accountId = host.chat.mock.calls[0][0].accountId;
+			await bridge.handleRunEvent({ type: "run_end", runId: "r1" });
+			await inbound(`/cwd ${workspace}`);
+			expect(reply.mock.calls.at(-1)?.[1].text).toContain("请提供工作区绝对路径");
+			expect(host.chat).toHaveBeenCalledTimes(1);
+			host.chat.mockResolvedValueOnce({ conversationId: "c1", runId: "r2" });
+			await inbound();
+			expect(host.chat.mock.calls[1][0]).toMatchObject({ cwd: projectWorkspace, accountId, conversationId: "c1" });
+		},
+	);
 
 	it("stop bypasses unresolved download and dispatch, cancelling eventual work", async () => {
 		const { bridge, host, inbound, download, reply } = setup();
@@ -141,7 +163,7 @@ describe("Feishu runtime contracts", () => {
 			"/model",
 			"/model p/m",
 			"/thinking high",
-			"/cwd E:/next",
+			`/cwd ${nextWorkspace}`,
 			"/new",
 			"/clear",
 			"/unknown",
@@ -152,7 +174,7 @@ describe("Feishu runtime contracts", () => {
 		expect(reply.mock.calls.at(-2)?.[1].text).toContain("未知命令");
 		host.chat.mockResolvedValue({ conversationId: "c", runId: "r" });
 		await inbound();
-		expect(host.chat.mock.calls[0][0]).toMatchObject({ cwd: "E:/next", model: "p/m", thinkingLevel: "high" });
+		expect(host.chat.mock.calls[0][0]).toMatchObject({ cwd: nextWorkspace, model: "p/m", thinkingLevel: "high" });
 		await inbound("/stop");
 		await inbound("/abort");
 		expect(host.abortRun).toHaveBeenCalledWith("r");

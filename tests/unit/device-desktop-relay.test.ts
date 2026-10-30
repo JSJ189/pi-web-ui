@@ -229,7 +229,7 @@ describe("native desktop through device relay and connector", () => {
 			const browser = await chromium.launch({
 				executablePath: CHROME_PATH,
 				headless: true,
-				timeout: 5000,
+				timeout: 15_000,
 				args: ["--no-sandbox"],
 			});
 			cleanups.push(() => browser.close());
@@ -262,7 +262,7 @@ describe("native desktop through device relay and connector", () => {
 			await page.locator("#disconnect").click();
 			await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
 		},
-		15_000,
+		30_000,
 	);
 	it("rewrites local authorization and transports binary frames and read-only ACKs through the full tunnel", async () => {
 		const f = await fixture();

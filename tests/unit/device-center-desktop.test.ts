@@ -594,7 +594,7 @@ describe("device desktop native route", () => {
 			const browser = await chromium.launch({
 				executablePath: CHROME_PATH,
 				headless: true,
-				timeout: 5000,
+				timeout: 15_000,
 				args: ["--no-sandbox"],
 			});
 			cleanups.push(() => browser.close());
@@ -633,6 +633,6 @@ describe("device desktop native route", () => {
 			expect(await page.locator("#connect").isEnabled()).toBe(true);
 			expect(errors).toEqual([]);
 		},
-		15_000,
+		30_000,
 	);
 });
