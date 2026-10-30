@@ -138,8 +138,8 @@ export class McpClient {
 	private initialized = false;
 	/** 工具列表动态更新回调（收到 notifications/tools/list_changed 时触发）。 */
 	onToolsChanged?: () => void;
-	/** 最近一次随请求发出的 OAuth access token（401 后据此判断是否已被别的进程换掉）。 */
-	private lastAccessToken: string | null = null;
+	/** HTTP notifications have no pending RPC response, but still belong to this client. */
+	private notificationControllers = new Set<AbortController>();
 
 	constructor(
 		name: string,
@@ -167,17 +167,17 @@ export class McpClient {
 	 * 该服务器要发的 `Authorization` 值（OAuth 保护的远端服务器用），没有凭据时返回 null。
 	 * `isRetry` = 上一次请求收到 401：强制刷新一次（凭据库里的 access token 可能没过期但已被吊销）。
 	 */
-	private async resolveAuthHeader(isRetry: boolean): Promise<string | null> {
+	private async resolveAuthHeader(isRetry: boolean, signal?: AbortSignal, staleToken?: string): Promise<string | null> {
 		if (!this.isHttp || !this.spec.url || this.hasStaticAuthorization()) return null;
-		const options = { agentDir: this.clientOpts.agentDir, name: this.name, serverUrl: this.spec.url };
+		const options = { agentDir: this.clientOpts.agentDir, name: this.name, serverUrl: this.spec.url, signal };
 		try {
 			const token = isRetry
-				? await refreshMcpAccessToken({ ...options, staleToken: this.lastAccessToken ?? undefined })
+				? await refreshMcpAccessToken({ ...options, staleToken })
 				: await getMcpAccessToken(options);
 			if (!token) return null;
-			this.lastAccessToken = token;
 			return `Bearer ${token}`;
 		} catch (err) {
+			signal?.throwIfAborted();
 			// 刷新失败不该让请求烂在这里：照旧发出去，由服务端的 401 给出最终结论（或失败原因）。
 			this.log(`[mcp:${this.name}] oauth:`, err instanceof Error ? err.message : err);
 			return null;
@@ -466,6 +466,7 @@ export class McpClient {
 		this.shuttingDown = true;
 		this.initialized = false;
 		this.rejectAll(new Error("[mcp] client closed"));
+		for (const controller of this.notificationControllers) controller.abort();
 		if (this.child) {
 			try {
 				this.child.kill();
@@ -569,9 +570,10 @@ export class McpClient {
 		if (signal?.aborted) {
 			throw new Error("Request aborted");
 		}
+		if (this.shuttingDown) throw new Error("[mcp] client closed");
 
 		const onAbort = () => {
-			abortController.abort();
+			this.pending.get(outId)?.reject(new Error("Request aborted"));
 		};
 		signal?.addEventListener("abort", onAbort, { once: true });
 
@@ -587,10 +589,6 @@ export class McpClient {
 				headers[k] = expandEnvVars(v);
 			}
 		}
-		const authHeader = await this.resolveAuthHeader(false);
-		if (authHeader) headers.Authorization = authHeader;
-
-		let timedOut = false;
 		let reqResolve!: (v: unknown) => void;
 		let reqReject!: (e: Error) => void;
 		const reqPromise = new Promise<unknown>((res, rej) => {
@@ -599,10 +597,7 @@ export class McpClient {
 		});
 
 		const timer = setTimeout(() => {
-			timedOut = true;
-			this.pending.delete(outId);
-			abortController.abort();
-			reqReject(new Error(`[mcp:${this.name}] ${method} 超时 (${timeoutMs}ms)`));
+			this.pending.get(outId)?.reject(new Error(`[mcp:${this.name}] ${method} 超时 (${timeoutMs}ms)`));
 		}, timeoutMs);
 
 		this.pending.set(outId, {
@@ -616,6 +611,7 @@ export class McpClient {
 				clearTimeout(timer);
 				signal?.removeEventListener("abort", onAbort);
 				this.pending.delete(outId);
+				abortController.abort();
 				reqReject(e);
 			},
 			timer,
@@ -625,115 +621,118 @@ export class McpClient {
 			abortController,
 		});
 
-		try {
-			const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
-			let res = await fetch(url, {
-				method: "POST",
-				headers,
-				body,
-				signal: abortController.signal,
-			});
+		// Return the result promise immediately: timeout/close must settle even during auth.
+		void (async () => {
+			try {
+				const authHeader = await this.resolveAuthHeader(false, abortController.signal);
+				abortController.signal.throwIfAborted();
+				if (authHeader) headers.Authorization = authHeader;
+				const body = JSON.stringify({ jsonrpc: "2.0", id, method, params });
+				let res = await fetch(url, {
+					method: "POST",
+					headers,
+					body,
+					signal: abortController.signal,
+				});
 
-			// 401 → 凭据库里的 token 可能已被吊销/轮换：强制刷新一次再重试同一请求（OAuth 保护的服务器）。
-			if (res.status === 401 && !this.hasStaticAuthorization()) {
-				const retriedHeader = await this.resolveAuthHeader(true);
-				if (retriedHeader && retriedHeader !== authHeader) {
-					headers.Authorization = retriedHeader;
-					res = await fetch(url, {
-						method: "POST",
-						headers,
-						body,
-						signal: abortController.signal,
-					});
+				abortController.signal.throwIfAborted();
+
+				// 401 → 凭据库里的 token 可能已被吊销/轮换：强制刷新一次再重试同一请求（OAuth 保护的服务器）。
+				if (res.status === 401 && !this.hasStaticAuthorization()) {
+					const retriedHeader = await this.resolveAuthHeader(
+						true,
+						abortController.signal,
+						authHeader?.slice("Bearer ".length),
+					);
+					abortController.signal.throwIfAborted();
+					if (retriedHeader && retriedHeader !== authHeader) {
+						headers.Authorization = retriedHeader;
+						res = await fetch(url, {
+							method: "POST",
+							headers,
+							body,
+							signal: abortController.signal,
+						});
+					}
+					abortController.signal.throwIfAborted();
+					if (res.status === 401) {
+						const detail = await res.text().catch(() => "");
+						throw this.signInRequiredError(detail);
+					}
 				}
-				if (res.status === 401) {
-					const detail = await res.text().catch(() => "");
-					throw this.signInRequiredError(detail);
-				}
-			}
 
-			const newSid = res.headers.get("mcp-session-id");
-			if (newSid) this.sessionId = newSid;
+				const newSid = res.headers.get("mcp-session-id");
+				if (newSid) this.sessionId = newSid;
 
-			if (res.status === 202) {
-				const pending = this.pending.get(outId);
-				pending?.resolve(null);
-				return await reqPromise;
-			}
-
-			if (res.status === 404 || res.status === 400) {
-				const errText = await res.text().catch(() => "");
-				if (res.status === 404 || /session/i.test(errText)) {
-					this.sessionId = null;
-					this.initialized = false;
+				if (res.status === 202) {
 					const pending = this.pending.get(outId);
-					pending?.reject(new Error(`MCP_SESSION_EXPIRED: ${errText || "Session expired or not found"}`));
-					return await reqPromise;
+					pending?.resolve(null);
+					return;
 				}
-				throw new Error(`HTTP ${res.status}: ${errText}`);
-			}
 
-			if (!res.ok) {
-				const errText = await res.text().catch(() => "");
-				throw new Error(`HTTP ${res.status}: ${errText}`);
-			}
+				if (res.status === 404 || res.status === 400) {
+					const errText = await res.text().catch(() => "");
+					abortController.signal.throwIfAborted();
+					if (res.status === 404 || /session/i.test(errText)) {
+						this.sessionId = null;
+						this.initialized = false;
+						const pending = this.pending.get(outId);
+						pending?.reject(new Error(`MCP_SESSION_EXPIRED: ${errText || "Session expired or not found"}`));
+						return;
+					}
+					throw new Error(`HTTP ${res.status}: ${errText}`);
+				}
 
-			const contentType = res.headers.get("content-type") || "";
-			if (contentType.includes("text/event-stream") && res.body) {
-				void this.readSseStream(res.body, outId, signal);
-			} else {
-				const text = await res.text();
-				let parsed: RpcIncoming;
-				try {
-					parsed = JSON.parse(text) as RpcIncoming;
-				} catch {
-					let matched: RpcIncoming | undefined;
-					if (text.includes("data:")) {
-						for (const l of text.split("\n")) {
-							const trimmed = l.trim();
-							if (trimmed.startsWith("data:")) {
-								try {
-									const item = JSON.parse(trimmed.slice(5).trim()) as RpcIncoming;
-									if (item.id !== undefined && String(item.id) === outId) {
-										matched = item;
-										break;
-									}
-								} catch {}
+				if (!res.ok) {
+					const errText = await res.text().catch(() => "");
+					throw new Error(`HTTP ${res.status}: ${errText}`);
+				}
+
+				const contentType = res.headers.get("content-type") || "";
+				if (contentType.includes("text/event-stream") && res.body) {
+					void this.readSseStream(res.body, outId, abortController.signal);
+				} else {
+					const text = await res.text();
+					abortController.signal.throwIfAborted();
+					let parsed: RpcIncoming;
+					try {
+						parsed = JSON.parse(text) as RpcIncoming;
+					} catch {
+						let matched: RpcIncoming | undefined;
+						if (text.includes("data:")) {
+							for (const l of text.split("\n")) {
+								const trimmed = l.trim();
+								if (trimmed.startsWith("data:")) {
+									try {
+										const item = JSON.parse(trimmed.slice(5).trim()) as RpcIncoming;
+										if (item.id !== undefined && String(item.id) === outId) {
+											matched = item;
+											break;
+										}
+									} catch {}
+								}
 							}
 						}
+						if (matched) {
+							parsed = matched;
+						} else {
+							throw new Error(`Invalid JSON response: ${text.slice(0, 200)}`);
+						}
 					}
-					if (matched) {
-						parsed = matched;
-					} else {
-						throw new Error(`Invalid JSON response: ${text.slice(0, 200)}`);
+					const pending = this.pending.get(outId);
+					if (pending) {
+						if (parsed.error) {
+							pending.reject(new Error(`[mcp:${this.name}] ${parsed.error.message ?? "MCP 错误"}`));
+						} else {
+							pending.resolve(parsed.result);
+						}
 					}
 				}
-				const pending = this.pending.get(outId);
-				if (pending) {
-					if (parsed.error) {
-						pending.reject(new Error(`[mcp:${this.name}] ${parsed.error.message ?? "MCP 错误"}`));
-					} else {
-						pending.resolve(parsed.result);
-					}
-				}
+			} catch (err) {
+				this.pending.get(outId)?.reject(err instanceof Error ? err : new Error(String(err)));
 			}
-
-			return await reqPromise;
-		} catch (err) {
-			if (timedOut) {
-				return await reqPromise;
-			}
-			if (signal?.aborted) {
-				const pending = this.pending.get(outId);
-				pending?.reject(new Error("Request aborted"));
-				return await reqPromise;
-			}
-			const pending = this.pending.get(outId);
-			pending?.reject(err instanceof Error ? err : new Error(String(err)));
-			return await reqPromise;
-		} finally {
-			signal?.removeEventListener("abort", onAbort);
-		}
+		})();
+		return reqPromise;
 	}
 
 	private async sendHttpNotification(method: string, params: Record<string, unknown>): Promise<void> {
@@ -751,18 +750,28 @@ export class McpClient {
 				headers[k] = expandEnvVars(v);
 			}
 		}
-		const authHeader = await this.resolveAuthHeader(false);
-		if (authHeader) headers.Authorization = authHeader;
+		if (this.shuttingDown) return;
+		const controller = new AbortController();
+		this.notificationControllers.add(controller);
+		const timer = setTimeout(() => controller.abort(), 8000);
 		try {
+			const authHeader = await this.resolveAuthHeader(false, controller.signal);
+			controller.signal.throwIfAborted();
+			if (authHeader) headers.Authorization = authHeader;
 			const res = await fetch(url, {
+				signal: controller.signal,
 				method: "POST",
 				headers,
 				body: JSON.stringify({ jsonrpc: "2.0", method, params }),
 			});
+			controller.signal.throwIfAborted();
 			const newSid = res.headers.get("mcp-session-id");
 			if (newSid) this.sessionId = newSid;
 		} catch (err) {
 			this.log(`[mcp:${this.name}] HTTP notification ${method} failed:`, err);
+		} finally {
+			clearTimeout(timer);
+			this.notificationControllers.delete(controller);
 		}
 	}
 

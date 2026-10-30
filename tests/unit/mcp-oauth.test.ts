@@ -165,8 +165,8 @@ describe("取 token：临近过期时刷新", () => {
 		expect(state.tokens?.access_token).toBe("access-new");
 		expect(state.tokens?.refresh_token).toBe("refresh-new");
 		expect(state.tokensExpireAt).toBeGreaterThan(Date.now() + 800_000);
-		// 凭据文件只有本人可读写
-		expect(statSync(storePath()).mode & 0o777).toBe(0o600);
+		// Windows reports emulated mode bits; POSIX permissions are only meaningful on Unix.
+		if (process.platform !== "win32") expect(statSync(storePath()).mode & 0o777).toBe(0o600);
 		// clientInformation / discovery 不被刷新覆盖
 		expect(state.clientInformation?.client_id).toBe("client-abc");
 		expect(state.discovery?.authorizationServerMetadata?.token_endpoint).toBe(TOKEN_ENDPOINT);
