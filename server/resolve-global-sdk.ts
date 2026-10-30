@@ -25,6 +25,7 @@
  * 让服务起不来。它必须在任何 SDK 静态 import **之前**被加载（`--import <本文件>`，
  * 或前台启动时在 import 服务入口之前先 import 它）。
  */
+import { registerBashProcessPatch } from "./patch-bash-process.js";
 import { existsSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { dirname, join } from "node:path";
@@ -154,6 +155,7 @@ export function registerGlobalSdkPreference(mode = process.env.PI_WEB_SDK, fromF
 }
 
 // ---- 副作用：被 `--import` 加载时立刻生效 --------------------------------
+registerBashProcessPatch();
 const used = registerGlobalSdkPreference();
 if (used) {
 	console.log(

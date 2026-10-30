@@ -237,6 +237,8 @@ npm publish
 
 ### 命令、文件与恢复状态边界
 
+- 原生 shell 的退出/收尾/取消由 `patch-bash-process.ts` 经 `resolve-global-sdk.ts` 的 Node load hook 在首次编译前修正；不得改写已安装 SDK 或用 timeout 改变终端路由。新增启动入口须预加载 SDK hook，保持退出码与有界清理。详见 `docs/architecture-terminal.md`。
+
 - WS 限额统一在 `server/payload-limits.ts`；attach 队列必须同时约束条数和累计字节，拒绝超限不得静默丢旧操作。
 - 历史搜索不得复用列表展示截断或截断正文缓存判定命中；流式扫描限制并发，新查询取消旧查询，切项目不发布过期结果。
 - 压缩恢复状态走 `compaction-state.ts` sidecar，运行中转录只有 SDK 可以写；恢复入口均须消费中断提示。终端历史用 `terminal_output.reset` 替换显示，回放前 flush 实时输出。
