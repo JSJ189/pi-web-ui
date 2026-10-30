@@ -387,11 +387,15 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 		);
 	app.get("/api/bots", (req, res) => {
 		const owner = account(req);
+		const state = store.snapshot();
 		res.json({
-			bots: store
-				.snapshot()
-				.bots.filter((b) => b.accountId === owner.id)
-				.map((b) => ({ ...b, online: options.isOnline?.(b.deviceId) ?? false })),
+			bots: state.bots
+				.filter((b) => b.accountId === owner.id)
+				.map((b) => ({
+					...b,
+					deviceName: state.devices.find((device) => device.id === b.deviceId && device.accountId === owner.id)?.name,
+					online: options.isOnline?.(b.deviceId) ?? false,
+				})),
 		});
 	});
 	app.put("/api/agent/bots", async (req, res) => {
@@ -511,7 +515,13 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 			fail(404, "Room missing");
 		res.json({
 			room,
-			bots: state.bots.filter((b) => room.botIds.includes(b.id) && b.accountId === room.accountId),
+			bots: state.bots
+				.filter((b) => room.botIds.includes(b.id) && b.accountId === room.accountId)
+				.map((b) => ({
+					...b,
+					deviceName: state.devices.find((device) => device.id === b.deviceId && device.accountId === room.accountId)
+						?.name,
+				})),
 			messages: state.messages.filter((m) => m.roomId === room.id),
 			tasks: state.tasks.filter((t) => t.roomId === room.id),
 		});

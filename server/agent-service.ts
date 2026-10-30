@@ -3258,16 +3258,20 @@ export class ClientSession {
 				getSession: () => this.session,
 				cwd: () => this.cwd,
 				agentDir: () => this.agentDir,
+				filterDiskSkills: (skills) => this.botExecution?.filterSkills(skills) ?? skills,
 				isStreaming: () => this.session.isStreaming || Boolean(this.conv?.promptInFlight),
 				reloadSession: async () => {
-					if (this.session.isStreaming || Boolean(this.conv?.promptInFlight)) {
+					if (this.disposed) return;
+					const conv = this.conv;
+					if (conv.session.isStreaming || Boolean(conv.promptInFlight)) {
 						this.settingsSvc.setPendingReload(true);
 						return;
 					}
-					await this.session.reload();
+					await conv.session.reload();
+					if (this.disposed || this.convs.get(conv.id) !== conv) return;
 					// reload() 重读磁盘 settings.json，统一收口重放配置覆盖与工具门控
-					this.applySessionOverrides(this.conv);
-					await this.pushSlashCommands();
+					this.applySessionOverrides(conv);
+					if (this.conv === conv) await this.pushSlashCommands();
 				},
 				applyRetryOverrides: () => this.applyRetryOverrides(),
 				applyCompactionOverrides: () => this.applyCompactionOverrides(),
@@ -3692,6 +3696,11 @@ export class ClientSession {
 				.find((entry) => entry.type === "custom" && entry.customType === "device-bot-execution");
 			if (botEntry && !this.botExecution)
 				throw new Error("Bot execution transcripts cannot be resumed as ordinary sessions");
+			if (botEntry?.type === "custom" && this.botExecution) {
+				const owner = botEntry.data as { botId?: unknown; revision?: unknown } | undefined;
+				if (owner?.botId !== this.botExecution.bot.id || owner?.revision !== this.botExecution.bot.revision)
+					throw new Error("Bot execution transcript ownership does not match the active capability");
+			}
 			if (this.botExecution && !botEntry)
 				sessionManager.appendCustomEntry("device-bot-execution", {
 					botId: this.botExecution.bot.id,
@@ -15505,11 +15514,11 @@ export class ClientSession {
 	}
 
 	async dispose(): Promise<void> {
+		this.disposed = true;
+		this.settingsSvc.dispose();
 		this.botExecution?.revoke();
 		this.botMcpBridge?.dispose();
 		this.sessionSearchController?.abort();
-		this.disposed = true;
-		this.settingsSvc.dispose();
 		this.pluginModelKeys?.clear();
 		this.modelAdmin.dispose();
 		// 关机路径：Windows 下跳过 pty.kill()（issue #215 ConPTY 死锁），只做

@@ -1,12 +1,20 @@
 import type { UiMessage, UiState } from "./types";
 import type { AtHit } from "./at-mention";
 
-export type GroupDevice = { id: string; name: string; deviceId?: string; enabled?: boolean; online?: boolean };
+export type GroupDevice = {
+	id: string;
+	name: string;
+	deviceId?: string;
+	deviceName?: string;
+	enabled?: boolean;
+	online?: boolean;
+};
 export type GroupMessage = {
 	id: string;
 	text: string;
 	createdAt: number;
-	sender: { name: string; type?: "human" | "bot" };
+	sender: { name: string; type?: "human" | "bot"; id?: string; sourceDeviceId?: string };
+	taskIds?: string[];
 	targetBotIds?: string[];
 };
 export type GroupTask = {
@@ -51,6 +59,18 @@ export function groupConversationState(
 ): { state: UiState; labels: ReadonlyMap<string, string> } {
 	const labels = new Map<string, string>();
 	const entries: UiMessage[] = [];
+	const bots = new Map(devices.map((bot) => [bot.id, bot]));
+	for (const bot of detail?.bots ?? []) bots.set(bot.id, { ...bots.get(bot.id), ...bot });
+	const statuses = zh
+		? { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", interrupted: "已中断" }
+		: { queued: "Queued", running: "Running", completed: "Completed", failed: "Failed", interrupted: "Interrupted" };
+	const tasks = new Map((detail?.tasks ?? []).map((task) => [task.id, task]));
+	const reportedTasks = new Set<string>();
+	const botLabel = (botId: string | undefined, name: string, deviceId?: string) => {
+		const bot = botId ? bots.get(botId) : undefined;
+		const device = bot?.deviceName || deviceId || bot?.deviceId;
+		return device ? `${name} · ${device}` : name;
+	};
 	for (const message of detail?.messages ?? []) {
 		const id = `group-message:${message.id}`;
 		entries.push({
@@ -59,15 +79,25 @@ export function groupConversationState(
 			timestamp: message.createdAt,
 			content: [{ type: "text", text: message.text }],
 		});
-		labels.set(id, message.sender.name);
+		if (message.sender.type !== "bot") {
+			labels.set(id, message.sender.name);
+			continue;
+		}
+		// Hub report messages link to tasks; human dispatch messages also carry taskIds.
+		// Match the stable Bot id too, never report text or display names.
+		const linkedTasks = (message.taskIds ?? [])
+			.map((taskId) => tasks.get(taskId))
+			.filter((task): task is GroupTask => !!task && task.botId === message.sender.id);
+		for (const task of linkedTasks) if (task.report) reportedTasks.add(task.id);
+		const status = [...new Set(linkedTasks.map((task) => statuses[task.status]))].join(" · ");
+		const sender = botLabel(message.sender.id, message.sender.name, message.sender.sourceDeviceId);
+		labels.set(id, status ? `${sender} · ${status}` : sender);
 	}
-	const statuses = zh
-		? { queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", interrupted: "已中断" }
-		: { queued: "Queued", running: "Running", completed: "Completed", failed: "Failed", interrupted: "Interrupted" };
 	for (const task of detail?.tasks ?? []) {
+		if (reportedTasks.has(task.id)) continue;
 		const id = `group-task:${task.id}`;
-		const device = devices.find((d) => d.id === task.botId);
-		labels.set(id, `${device?.name ?? task.botId} · ${statuses[task.status]}`);
+		const bot = bots.get(task.botId);
+		labels.set(id, `${botLabel(task.botId, bot?.name ?? task.botId, task.deviceId)} · ${statuses[task.status]}`);
 		entries.push({
 			id,
 			role: "assistant",

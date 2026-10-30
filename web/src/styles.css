@@ -9939,6 +9939,61 @@
 		overflow-wrap: anywhere;
 	}
 
+	/* Group sender identity must remain visible when ordinary chat model rows are hidden. */
+	.main .msg-group .msg-meta,
+	.main.hide-model-row .msg-group.msg-assistant .msg-meta {
+		display: flex;
+		align-items: center;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.msg-group .msg-role {
+		display: none;
+	}
+
+	.msg-group .msg-sender {
+		display: flex;
+		align-items: center;
+		gap: 8px;
+		min-width: 0;
+		max-width: 100%;
+		font-size: 12px;
+		font-weight: 600;
+		color: var(--text);
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	.msg-group .msg-sender::before {
+		content: attr(data-initial);
+		display: grid;
+		place-items: center;
+		flex: none;
+		width: 26px;
+		height: 26px;
+		border-radius: 50%;
+		background: var(--bg-elev2);
+		color: var(--text);
+		text-transform: uppercase;
+	}
+
+	.msg-group .msg-body {
+		min-width: 0;
+		max-width: 100%;
+		padding: 10px 14px;
+		border: 1px solid var(--border);
+		border-radius: 4px 14px 14px;
+		background: var(--bg-elev2);
+		overflow-wrap: anywhere;
+		word-break: break-word;
+	}
+
+	.msg-group.msg-user .msg-body {
+		background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev2));
+		border-radius: 14px 4px 14px 14px;
+	}
+
 	.msg-customtype {
 		font-size: 11px;
 		color: var(--amber);

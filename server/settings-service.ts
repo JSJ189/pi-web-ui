@@ -47,7 +47,7 @@ import { findVisionModels, SYSTEM_PROMPT } from "./vision-bridge.js";
 import { COMMITMSG_SYSTEM_PROMPT } from "./scm-commitmsg.js";
 import { PLAN_MODE_SYSTEM_PROMPT } from "./plan-mode.js";
 import { DEFAULT_TEMPLATES, localizeTemplate, type SubagentTemplatesStore } from "./subagent-templates.js";
-import { discoverDiskSkills, isSkillStillOnDisk } from "./skill-discovery.js";
+import { discoverDiskSkills, isSkillStillOnDisk, type DiscoveredSkill } from "./skill-discovery.js";
 import type { ApprovalRulesStore } from "./approval-rules.js";
 import { deriveLegacy, foldLegacyIntoDisabled, normalizeDisabledAgentTools } from "./tool-manager.js";
 import { normalizeToolPromptOverrides } from "./tool-prompt-overrides.js";
@@ -81,6 +81,8 @@ export interface SettingsHost {
 	cwd: () => string;
 	/** pi 配置目录（<agentDir>/skills 是技能来源之一）。 */
 	agentDir: () => string;
+	/** Apply the execution owner's capability scope to disk discovery as well as loaded skills. */
+	filterDiskSkills?: (skills: DiscoveredSkill[]) => DiscoveredSkill[];
 	isStreaming: () => boolean;
 	/** session.reload() + 刷新斜杠命令目录。 */
 	reloadSession: () => Promise<void>;
@@ -331,6 +333,7 @@ export class SettingsService {
 		return false;
 	}
 	push(maintain = true): void {
+		if (this.disposed || this.host.isDisposed()) return;
 		this.settings = this.host.stateStore.getSettings(this.host.clientId);
 		this.presets = this.host.stateStore.getPresets(this.host.clientId);
 		const disabledSkills = new Set(this.settings.disabledSkills);
@@ -346,10 +349,11 @@ export class SettingsService {
 			loadedExtNames = new Set(loadedExts.map((e) => extensionKey(e)));
 
 			// 实时全源磁盘扫描：动态发现外部新安装/更新的各类 Agent 全局与本地技能
-			const diskSkills = discoverDiskSkills({
+			const discoveredSkills = discoverDiskSkills({
 				cwd: this.host.cwd(),
 				agentDir: this.host.agentDir(),
 			});
+			const diskSkills = this.host.filterDiskSkills?.(discoveredSkills) ?? discoveredSkills;
 
 			// Prune entries that no longer exist on disk AND aren't disabled
 			// (e.g. a skill/extension file was deleted). Disabled entries are
@@ -403,7 +407,7 @@ export class SettingsService {
 			// 若发现磁盘新增了 loader 尚未加载的技能，触发会话后台异步 reload 以刷新提示词和技能工具
 			const hasUnloadedDiskSkills = diskSkills.some((ds) => !loadedSkillNames!.has(ds.name));
 			if (maintain && hasUnloadedDiskSkills && !this.host.isStreaming()) {
-				void this.host.reloadSession();
+				void this.applyRuntime();
 			}
 		} catch {
 			// Session not ready yet — keep whatever we already know.

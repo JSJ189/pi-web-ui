@@ -19,7 +19,7 @@ let store: ClientStateStore;
 let emitted: ServerMessage[];
 const skillName = "global-test-skill";
 
-function makeService(): SettingsService {
+function makeService(overrides: Partial<SettingsHost> = {}): SettingsService {
 	const host: SettingsHost = {
 		clientId: "test-client",
 		stateStore: store,
@@ -42,6 +42,7 @@ function makeService(): SettingsService {
 		applyCompactionOverrides: () => {},
 		applyToolGating: () => {},
 		promptSnapshot: () => ({ full: "", texts: {}, toolsSchema: "" }),
+		...overrides,
 	};
 	return new SettingsService(host, new SubagentTemplatesStore(join(dir, "templates.json")));
 }
@@ -76,6 +77,53 @@ afterEach(() => {
 });
 
 describe("global .agents/skills settings (issue #669)", () => {
+	it("does not reload for disk skills excluded by the execution capability", () => {
+		installSkill();
+		store.saveSettings("test-client", { disabledSkills: [], reviewDisabledSkills: [] });
+		const reload = vi.fn(async () => {});
+		const svc = makeService({ filterDiskSkills: () => [], reloadSession: reload });
+		svc.push();
+		svc.push();
+		expect(reload).not.toHaveBeenCalled();
+		const state = emitted.filter((msg) => msg.type === "settings_state").at(-1);
+		expect(state?.settings.skills.some((skill) => skill.name === skillName)).toBe(false);
+	});
+
+	it("reports a failed discovery reload through the normal settings error path", async () => {
+		installSkill();
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const reload = vi.fn(async () => {
+				throw new Error("discovery reload failed");
+			});
+			const svc = makeService({ reloadSession: reload });
+			svc.push();
+			await vi.waitFor(() =>
+				expect(emitted).toContainEqual(
+					expect.objectContaining({
+						type: "notice",
+						level: "error",
+						textEn: "Failed to apply settings: discovery reload failed",
+					}),
+				),
+			);
+			expect(reload).toHaveBeenCalledTimes(1);
+		} finally {
+			error.mockRestore();
+		}
+	});
+
+	it("does not discover skills or start reloads after disposal", () => {
+		installSkill();
+		const filter = vi.fn((skills) => skills);
+		const reload = vi.fn(async () => {});
+		const svc = makeService({ filterDiskSkills: filter, reloadSession: reload });
+		svc.dispose();
+		svc.push();
+		expect(filter).not.toHaveBeenCalled();
+		expect(reload).not.toHaveBeenCalled();
+		expect(emitted).toEqual([]);
+	});
 	it.each([
 		["outside home", "directory"],
 		["outside home", "markdown"],

@@ -1,0 +1,376 @@
+// Real Hub -> local device runtime -> executor -> built pi server -> SDK -> local HTTP model.
+// Never builds dist. Run after parent build: node --import tsx tests/device-bot-live-integration-test.mjs
+// Regression: a second Bot hello used to reclaim the first disconnected Bot's
+// ClientSession; its stale clientId snapshot aborted the task before SDK inference.
+// PI_BOT_LIVE_READ_FIRST=1 proves the tool path independently of the sequential check.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { createServer } from "node:http";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { startDeviceHub } from "../server/device-center/main.ts";
+import WebSocket from "ws";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const temp = await mkdtemp(join(tmpdir(), "pi-bot-live-"));
+const project = join(temp, "project");
+const agent = join(temp, "agent");
+const data = join(temp, "data");
+const requests = [];
+let logs = "";
+let child;
+let hub;
+let fixture;
+let cookie;
+let mode = "plain";
+let lastRoom;
+let control;
+const controlPackets = [];
+const sentinel = "BOT_LIVE_READ_EVIDENCE_83f91";
+const modelId = "bot-live-model";
+const provider = "bot-live-fixture";
+
+async function port() {
+	const server = createServer();
+	await new Promise((resolve, reject) => {
+		server.once("error", reject);
+		server.listen(0, "127.0.0.1", resolve);
+	});
+	const value = server.address().port;
+	await new Promise((resolve) => server.close(resolve));
+	return value >= 8900 ? value : port();
+}
+async function until(work, label, timeout = 45_000) {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		const value = await work();
+		if (value) return value;
+		if (child && child.exitCode !== null) throw new Error(`Server exited ${child.exitCode}: ${logs}`);
+		await delay(100);
+	}
+	throw new Error(`Timed out: ${label}; last room=${JSON.stringify(lastRoom)}; server=${logs}`);
+}
+async function api(origin, path, body, expected = 200, authenticated = true) {
+	const response = await fetch(origin + path, {
+		method: body === undefined ? "GET" : "POST",
+		headers: {
+			Origin: origin,
+			...(body === undefined ? {} : { "Content-Type": "application/json" }),
+			...(authenticated && cookie ? { Cookie: cookie } : {}),
+		},
+		...(body === undefined ? {} : { body: JSON.stringify(body) }),
+	});
+	const raw = await response.text();
+	let value;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		throw new Error(`${path}: HTTP ${response.status}: ${raw.slice(0, 400)}`);
+	}
+	assert.equal(response.status, expected, `${path}: ${JSON.stringify(value)}`);
+	return { value, response };
+}
+async function transcripts(directory) {
+	const found = [];
+	for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+		const path = join(directory, entry.name);
+		if (entry.isDirectory()) found.push(...(await transcripts(path)));
+		else if (entry.name.endsWith(".jsonl")) found.push(await readFile(path, "utf8"));
+	}
+	return found;
+}
+function stream(response, delta, reason) {
+	const chunk = (value, finish = null) => ({
+		id: "chatcmpl-bot-live",
+		object: "chat.completion.chunk",
+		created: 1,
+		model: modelId,
+		choices: [{ index: 0, delta: value, finish_reason: finish }],
+	});
+	response.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
+	for (const value of [chunk({ role: "assistant" }), chunk(delta), chunk({}, reason)]) {
+		response.write(`data: ${JSON.stringify(value)}\n\n`);
+	}
+	response.end("data: [DONE]\n\n");
+}
+try {
+	await Promise.all([mkdir(project), mkdir(agent), mkdir(data)]);
+	await writeFile(join(project, "probe.txt"), sentinel);
+	// A real disk Skill excluded by this Bot must not cause perpetual SDK reloads.
+	const excludedSkill = join(agent, "skills", "bot-live-excluded");
+	await mkdir(excludedSkill, { recursive: true });
+	await writeFile(
+		join(excludedSkill, "SKILL.md"),
+		"---\nname: bot-live-excluded\ndescription: Excluded skill sentinel for Bot capability regression.\n---\nBOT_LIVE_EXCLUDED_SKILL_SECRET\n",
+	);
+	fixture = createServer(async (request, response) => {
+		let raw = "";
+		for await (const chunk of request) raw += chunk;
+		const body = JSON.parse(raw || "{}");
+		requests.push({ url: request.url, authorization: request.headers.authorization, mode, body });
+		if (mode === "api-error") {
+			response.writeHead(401, { "Content-Type": "application/json" });
+			response.end(JSON.stringify({ error: { message: "BOT_LIVE_FIXTURE_AUTH_REJECTED", type: "invalid_api_key" } }));
+			return;
+		}
+		const previousTool = body.messages?.findLast((message) => message.role === "tool");
+		if ((mode === "read" || mode === "denied-tool") && !previousTool) {
+			stream(
+				response,
+				{
+					tool_calls: [
+						{
+							index: 0,
+							id: "call_bot_live_read",
+							type: "function",
+							function: { name: "read", arguments: JSON.stringify({ path: "probe.txt" }) },
+						},
+					],
+				},
+				"tool_calls",
+			);
+		} else {
+			stream(
+				response,
+				{
+					content: previousTool ? `BOT_LIVE_TOOL_DONE ${JSON.stringify(previousTool.content)}` : "BOT_LIVE_PLAIN_DONE",
+				},
+				"stop",
+			);
+		}
+	});
+	const fixturePort = await port();
+	await new Promise((resolve) => fixture.listen(fixturePort, "127.0.0.1", resolve));
+	await writeFile(
+		join(agent, "models.json"),
+		JSON.stringify({
+			providers: {
+				[provider]: {
+					baseUrl: `http://127.0.0.1:${fixturePort}/v1`,
+					api: "openai-completions",
+					apiKey: "bot-live-known-test-key",
+					models: [
+						{
+							id: modelId,
+							name: "Isolated deterministic Bot fixture",
+							reasoning: false,
+							input: ["text"],
+							contextWindow: 128000,
+							maxTokens: 4096,
+							cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+						},
+					],
+				},
+			},
+		}),
+	);
+	await writeFile(join(agent, "settings.json"), JSON.stringify({ defaultProvider: provider, defaultModel: modelId }));
+	const observer = join(temp, "observe-ws.mjs");
+	await writeFile(
+		observer,
+		`import WebSocket from ${JSON.stringify(new URL("../node_modules/ws/wrapper.mjs", import.meta.url).href)};\nconst send = WebSocket.prototype.send;\nWebSocket.prototype.send = function(data, ...args) { try { const p = JSON.parse(String(data)); if (["hello", "snapshot", "snapshot_delta", "error"].includes(p.type)) console.log("BOT_WIRE", JSON.stringify({ type:p.type, clientId:p.clientId ?? p.state?.clientId, conversationId:p.state?.conversationId, error:p.error ?? p.message })); } catch {} return send.call(this,data,...args); };`,
+	);
+	const localPort = await port();
+	const hubPort = await port();
+	const localOrigin = `http://127.0.0.1:${localPort}`;
+	const hubOrigin = `http://127.0.0.1:${hubPort}`;
+	hub = await startDeviceHub({
+		PI_DEVICE_HUB_PUBLIC_URL: hubOrigin,
+		PI_DEVICE_HUB_PORT: String(hubPort),
+		PI_DEVICE_HUB_HOST: "127.0.0.1",
+		PI_DEVICE_HUB_DATA_DIR: join(temp, "hub"),
+		PI_DEVICE_HUB_ALLOW_REGISTRATION: "1",
+	});
+	child = spawn(process.execPath, ["--import", pathToFileURL(observer).href, join(root, "dist/server/index.js")], {
+		cwd: project,
+		env: {
+			...process.env,
+			PI_WEB_PORT: String(localPort),
+			PI_WEB_HOST: "127.0.0.1",
+			PI_WEB_CWD: project,
+			PI_WEB_DATA_DIR: data,
+			PI_CODING_AGENT_DIR: agent,
+			PI_WEB_SDK: "bundled",
+			PI_WEB_PASSWORD: "",
+			PI_WEB_PLUGIN_CATALOG_URL: "off",
+			PI_WEB_PRESET_CATALOG_URL: "off",
+			PI_WEB_TOOL_LAZY_LOADING: "0",
+			PI_WEB_QUIET: "1",
+		},
+		stdio: ["ignore", "pipe", "pipe"],
+	});
+	for (const pipe of [child.stdout, child.stderr]) pipe.on("data", (chunk) => (logs = (logs + chunk).slice(-24000)));
+	await until(
+		async () =>
+			fetch(`${localOrigin}/api/health`)
+				.then((r) => r.ok)
+				.catch(() => false),
+		"pi health",
+	);
+	const registration = await api(
+		hubOrigin,
+		"/api/auth/register",
+		{ username: "bot-live-owner", password: "bot-live-test-password-843" },
+		201,
+		false,
+	);
+	cookie = registration.response.headers.get("set-cookie")?.split(";")[0];
+	assert.ok(cookie);
+	const paired = await api(
+		localOrigin,
+		"/api/device-center/pair",
+		{ hubUrl: hubOrigin, name: "Bot live isolated device" },
+		200,
+		false,
+	);
+	await api(hubOrigin, "/api/pair/approve", { code: paired.value.code });
+	await api(localOrigin, "/api/device-center/poll", {}, 200, false);
+	await api(localOrigin, "/api/device-center/execution", { allowExecution: true }, 200, false);
+	const botInput = {
+		name: "Bot live SDK",
+		description: "Deterministic real SDK integration",
+		systemPrompt: "Follow the task. The local model fixture controls the response.",
+		cwd: project,
+		model: { provider, modelId },
+		tools: ["read", "bash"],
+		skills: [],
+		mcpServers: [],
+		enabled: true,
+	};
+	let bot = (await api(localOrigin, "/api/device-center/local-bots", botInput, 200, false)).value.bot;
+	assert.ok(bot?.id, "Real local Bot API returns a stable ID");
+	await until(async () => {
+		const { value } = await api(hubOrigin, "/api/bots");
+		return value.bots.some((item) => item.id === bot.id && item.enabled);
+	}, "Bot published to Hub");
+	const { room } = (await api(hubOrigin, "/api/rooms", { name: "Bot live tasks", botIds: [bot.id] }, 201)).value;
+	async function dispatch(taskMode, expectedStatus) {
+		mode = taskMode;
+		const before = requests.length;
+		const { value } = await api(hubOrigin, `/api/rooms/${room.id}/messages`, {
+			text: `BOT_LIVE_${taskMode}: ${taskMode === "read" ? "Read probe.txt, then report its exact content." : "Reply with the deterministic completion."}`,
+			targetBotIds: [bot.id],
+			idempotencyKey: `bot-live-${taskMode}`,
+		});
+		const id = value.tasks[0].id;
+		const task = await until(
+			async () => {
+				lastRoom = (await api(hubOrigin, `/api/rooms/${room.id}`)).value;
+				const current = lastRoom.tasks.find((item) => item.id === id);
+				return ["completed", "failed", "cancelled", "rejected"].includes(current?.status) && current;
+			},
+			`task ${taskMode} terminal`,
+			90_000,
+		);
+		console.log(`Task ${taskMode}: ${JSON.stringify(task)}`);
+		assert.equal(
+			task.status,
+			expectedStatus,
+			`${taskMode}: ${JSON.stringify(task)}; requests=${requests.length - before}; server=${logs}`,
+		);
+		return { task, calls: requests.slice(before) };
+	}
+	const firstRead = process.env.PI_BOT_LIVE_READ_FIRST === "1" ? await dispatch("read", "completed") : undefined;
+	const plain = await dispatch("plain", "completed");
+	assert.match(plain.task.report, /BOT_LIVE_PLAIN_DONE/);
+	assert.equal(plain.calls.length, 1);
+	assert.equal(plain.calls[0].body.model, modelId);
+	assert.doesNotMatch(
+		JSON.stringify(plain.calls[0].body.messages),
+		/BOT_LIVE_EXCLUDED_SKILL_SECRET|name="bot-live-excluded"/,
+	);
+	assert.equal(plain.calls[0].authorization, "Bearer bot-live-known-test-key");
+	assert.ok(plain.calls[0].body.messages.some((message) => JSON.stringify(message).includes("BOT_LIVE_plain")));
+	console.log("PASS real capability hello/new_chat/prompt -> SDK HTTP -> assistant -> Hub completion");
+	// Reload from an ordinary local UI after the first executor releases its capability.
+	// A disposed Bot resource loader must never run under a revoked capability.
+	control = new WebSocket(`${localOrigin.replace("http:", "ws:")}/ws`, { origin: localOrigin });
+	control.on("message", (raw) => controlPackets.push(JSON.parse(String(raw))));
+	await new Promise((resolve, reject) => {
+		control.once("open", resolve);
+		control.once("error", reject);
+	});
+	control.send(JSON.stringify({ type: "hello", clientId: "bot-live-local-reload-control", cwd: project }));
+	await until(() => controlPackets.some((packet) => packet.type === "snapshot"), "ordinary local control hello");
+	control.send(JSON.stringify({ type: "extensions_reload" }));
+	await delay(400);
+	assert.doesNotMatch(logs, /Unhandled Promise Rejection|Bot execution capability has been revoked/);
+	const read = firstRead ?? (await dispatch("read", "completed"));
+	assert.match(read.task.report, new RegExp(sentinel));
+	assert.equal(read.calls.length, 2);
+	assert.deepEqual(read.calls[0].body.tools.map((tool) => tool.function.name).sort(), ["bash", "read"]);
+	assert.ok(
+		read.calls[1].body.messages.some(
+			(message) => message.role === "tool" && JSON.stringify(message.content).includes(sentinel),
+		),
+	);
+	const text = (await transcripts(temp)).join("\n");
+	assert.match(text, /BOT_LIVE_PLAIN_DONE/);
+	assert.match(text, /"toolCall"/);
+	assert.match(text, /"toolResult"/);
+	assert.match(text, new RegExp(sentinel));
+	console.log("PASS actual read tool execution and persisted SDK assistant/tool transcript");
+	const failure = await dispatch("api-error", "failed");
+	assert.ok(failure.calls.length >= 1, "Failure must originate from real SDK HTTP inference");
+	assert.match(failure.task.report, /phase=model; category=model_auth/);
+	assert.doesNotMatch(failure.task.report, /BOT_LIVE_FIXTURE_AUTH_REJECTED|bot-live-known-test-key/);
+	assert.match((await transcripts(temp)).join("\n"), /BOT_LIVE_FIXTURE_AUTH_REJECTED/);
+	console.log("PASS SDK provider rejection reaches failed Hub task");
+	// A model cannot elevate its Bot capability by inventing a forbidden tool call.
+	bot = (await api(localOrigin, "/api/device-center/local-bots", { ...bot, tools: ["bash"] }, 200, false)).value.bot;
+	const denied = await dispatch("denied-tool", "completed");
+	assert.deepEqual(
+		denied.calls[0].body.tools.map((tool) => tool.function.name),
+		["bash"],
+	);
+	assert.doesNotMatch(denied.task.report, new RegExp(sentinel));
+	assert.ok(
+		denied.calls[1].body.messages.some(
+			(message) =>
+				message.role === "tool" && /not found|not allowed|denied|unknown/i.test(JSON.stringify(message.content)),
+		),
+	);
+	console.log("PASS fixture-forced forbidden read cannot escape Bot tool allowlist");
+	assert.doesNotMatch(logs, /Unhandled Promise Rejection|Bot execution capability has been revoked/);
+	// A disabled Bot cannot receive a new task; this must not reach the model.
+	bot = (await api(localOrigin, "/api/device-center/local-bots", { ...bot, enabled: false }, 200, false)).value.bot;
+	await until(
+		async () => !(await api(hubOrigin, "/api/bots")).value.bots.some((item) => item.id === bot.id && item.enabled),
+		"disabled Bot synchronized",
+	);
+	const beforeReject = requests.length;
+	await api(
+		hubOrigin,
+		`/api/rooms/${room.id}/messages`,
+		{ text: "Disabled Bot must reject", targetBotIds: [bot.id] },
+		400,
+	);
+	assert.equal(requests.length, beforeReject);
+	console.log("PASS disabled Bot rejection before model execution");
+	console.log("PASS device-bot-live-integration: real isolated Hub/device/SDK/model, no paid inference");
+} catch (error) {
+	console.error(
+		`Bot live failure: ${error.stack}\nFixture requests: ${JSON.stringify(requests.map(({ url, mode, body }) => ({ url, mode, model: body.model, messages: body.messages?.map((m) => ({ role: m.role, content: m.role === "system" ? "[system prompt]" : m.content })), tools: body.tools?.map((t) => t.function.name) })))}\nServer log:\n${logs}`,
+	);
+	process.exitCode = 1;
+} finally {
+	control?.terminate();
+	if (child && child.exitCode === null && child.signalCode === null) {
+		child.kill("SIGTERM");
+		await Promise.race([new Promise((resolve) => child.once("exit", resolve)), delay(5000)]);
+		if (child.exitCode === null && child.signalCode === null) {
+			child.kill("SIGKILL");
+			await new Promise((resolve) => child.once("exit", resolve));
+		}
+	}
+	hub?.server.closeAllConnections();
+	await hub?.close();
+	if (fixture) {
+		fixture.closeAllConnections();
+		await new Promise((resolve) => fixture.close(resolve));
+	}
+	await rm(temp, { recursive: true, force: true });
+}

@@ -19,7 +19,7 @@ import { VERSION, getAgentDir, type AgentSession } from "@earendil-works/pi-codi
 import { ClientStateStore } from "./client-state.js";
 import { ClaimStore } from "./claim-store.js";
 import { toServiceInfo, launchOrigin } from "./launch-origin.js";
-import { isPseudoClientId, checkPluginCwd } from "./client-id-utils.js";
+import { isPseudoClientId, isOrphanAdoptionExcludedClientId, checkPluginCwd } from "./client-id-utils.js";
 import { pickAdoptableOrphan, type OrphanCandidate } from "./orphan-manager.js";
 import { findMostRecentSessionFileFast } from "./session-parser.js";
 import { isRemoteWorkspaceUri, resolveWorkspaceSessionDir } from "./remote-ssh-service.js";
@@ -877,7 +877,7 @@ export class AgentService {
 		const cands: OrphanCandidate[] = [];
 		for (const [id, cs] of this.clients) {
 			if (id === excludeClientId) continue;
-			const pseudo = AgentService.isPseudoClientId(id);
+			const pseudo = isOrphanAdoptionExcludedClientId(id);
 			let live = false;
 			let streaming = 0;
 			let adoptable = false;
@@ -1189,9 +1189,9 @@ export class AgentService {
 				// 流式增量经尾部 attachSink 直接推给新 socket）。
 				// 有其他在线标签时不认领（issue #10 隔离优先）；quiesce 排空期也放行
 				// （这是重连既有工作，不是新工作）。本段无 await，并发 attach 原子。
-				// 伪客户端（scheduler:/plugin:，定时任务/插件的无头调用）绝不认领：
-				// 否则无头会话会改键劫持用户关浏览器留下的残会话。
-				const orphan = AgentService.isPseudoClientId(clientId) ? null : this.findAdoptableOrphan(clientId);
+				// 伪客户端（含 device-task- 私有 Bot capability）绝不认领；
+				// 候选端同样排除伪客户端，禁止浏览器接管 Bot 或新任务复用旧 capability。
+				const orphan = isOrphanAdoptionExcludedClientId(clientId) ? null : this.findAdoptableOrphan(clientId);
 				if (orphan) {
 					this.clients.delete(orphan.oldId);
 					// 残骸被本页认领：它的离线行状态随 id 作废（行归到新 id 名下）。
@@ -1238,9 +1238,9 @@ export class AgentService {
 					// 也无需事后拆 runtime）。之前只拦 running：空闲持有照样恢复出双
 					// writer，两边轮流发送分叉历史。其他客户端不存在时不扫目录。
 					let createOpts: { blank?: boolean; blankTitle?: string; idleHeld?: boolean } | undefined;
-					const isPseudo = AgentService.isPseudoClientId(clientId);
-					if (isPseudo) {
-						// 伪客户端（插件无头调用、定时调度任务、Canvas专用通道等）：严禁自动恢复并占有工作区历史会话，强制空白
+					const requiresBlankSession = isOrphanAdoptionExcludedClientId(clientId);
+					if (requiresBlankSession) {
+						// 伪客户端（插件、调度、Canvas、Bot）：禁止自动恢复工作区历史或旧任务，强制空白
 						createOpts = { blank: true };
 					} else if (this.clients.size > 0) {
 						try {

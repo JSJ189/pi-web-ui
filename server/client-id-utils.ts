@@ -43,6 +43,16 @@ export function checkPluginCwd(cwd: string): { ok: boolean; abs?: string; error?
 	return { ok: true, abs };
 }
 
+/** Private Bot execution IDs carry process-local authority and must never join browser adoption. */
+export function isDeviceTaskClientId(id: string): boolean {
+	return id.startsWith("device-task-");
+}
+
+/** Private execution channels and pseudo clients cannot adopt or be adopted by browsers. */
+export function isOrphanAdoptionExcludedClientId(id: string): boolean {
+	return isDeviceTaskClientId(id) || isPseudoClientId(id);
+}
+
 /** 插件/调度/Canvas伪客户端：sink 常驻或后台辅助专用通道，不参与聊天会话认领与感知。 */
 export function isPseudoClientId(id: string): boolean {
 	return (

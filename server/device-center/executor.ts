@@ -5,6 +5,7 @@ import type { ClientMessage, ServerMessage, UiState } from "../protocol.js";
 import { DeviceTaskError } from "./task-error.js";
 import type { LocalBot } from "./bots.js";
 import { registerBotExecution } from "./bot-execution.js";
+import { DeviceExecutionError, executionFailure, type ExecutionPhase } from "./execution-failure.js";
 
 export interface DeviceExecutorTask {
 	botId: string;
@@ -33,18 +34,6 @@ const attempted = new Set<string>();
 const busyOrigins = new Set<string>();
 const TIMEOUT_MS = 20 * 60 * 1000;
 const REPORT_BYTES = 16 * 1024;
-function safeExecutionFailure(reason: string): string {
-	if (reason.includes("human") || reason.includes("approval"))
-		return "需要在目标设备处理提问或审批。 / Local human input or approval is required.";
-	if (reason.includes("WebSocket"))
-		return "无法保持与目标设备本机智能体的连接，请检查服务状态。 / Local agent connection failed or disconnected.";
-	if (reason.includes("timeout")) return "任务超时，未自动重试。 / Task timed out; no automatic retry.";
-	if (reason.includes("ownership") || reason.includes("SDK session"))
-		return "任务会话归属验证失败，已停止。 / Task session ownership validation failed.";
-	if (reason.includes("cwd") || reason.includes("Workspace"))
-		return "目标设备的任务工作目录初始化失败。 / Task workspace initialization failed.";
-	return "请在目标设备保留的任务对话中查看模型或执行错误。 / Inspect the retained task conversation for model or execution errors.";
-}
 
 function originUrl(value: string): URL {
 	const url = new URL(value);
@@ -189,7 +178,7 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 				};
 				const context = () =>
 					`Task: ${task.id}\nAttempt: ${task.attemptId}\nLocal system: ${os.platform()} / ${os.arch()}\nLocal UI: ${origin.origin}/\nClient: ${clientId}\nConversation: ${conversationId ?? "not created"}`;
-				const finish = (error?: string, body = "") => {
+				const finish = (error?: string, body = "", failurePhase?: ExecutionPhase) => {
 					if (settled) return;
 					settled = true;
 					capability.revoke();
@@ -216,9 +205,17 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 					const result = error ? report(`${context()}\n\nExecution interrupted: ${error}`) : report(body);
 					if (error)
 						rejectRun(
-							new DeviceTaskError(
-								report(
-									`${context()}\n\nExecution interrupted. Check the retained task conversation on the target device.\n${safeExecutionFailure(error)}`,
+							new DeviceExecutionError(
+								executionFailure(
+									error,
+									failurePhase ??
+										(phase === "hello"
+											? "handshake"
+											: phase === "initial" || phase === "cwd"
+												? "init"
+												: phase === "new"
+													? "new_chat"
+													: "model"),
 								),
 								result,
 							),
@@ -239,8 +236,10 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 				}
 				ws.on("open", () => send({ type: "hello", clientId }));
 				ws.on("error", () => finish("Local WebSocket error; no automatic retry"));
-				ws.on("close", () => {
-					finish("Local WebSocket disconnected; execution outcome uncertain; no automatic retry");
+				ws.on("close", (code, reason) => {
+					finish(
+						`Local WebSocket disconnected (${code}); execution outcome uncertain; no automatic retry. ${reason.toString()}`,
+					);
 					if (prompted && !idleConfirmed) uncertain();
 				});
 				ws.on("message", (data) => {
@@ -261,11 +260,11 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 						return;
 					}
 					if (message.type === "notice" && message.level === "error") {
-						finish(message.text);
+						finish(message.textEn || message.text || "Local agent error notice");
 						return;
 					}
 					if (message.type === "transition_progress") {
-						if (message.phase === "error") finish(message.text);
+						if (message.phase === "error") finish(message.text || "Local session transition failed");
 						if (phase === "cwd" && message.kind === "cwd" && message.phase === "done") {
 							cwdDone = true;
 							send({ type: "get_state" });
@@ -302,6 +301,13 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 							!state.pendingApproval
 						)
 							confirmStopped();
+						return;
+					}
+					// Initialization/new_chat failures can arrive as snapshots before a
+					// task conversation exists. Do not wait for a successful transition.
+					const snapshotError: unknown = Reflect.get(state, "error");
+					if (state.errorMessage || (typeof snapshotError === "string" && snapshotError)) {
+						finish(state.errorMessage || (snapshotError as string));
 						return;
 					}
 					if (phase === "initial" || (phase === "cwd" && cwdDone)) {
@@ -361,10 +367,6 @@ export function createDeviceTaskExecutor(options: DeviceTaskExecutorOptions) {
 					}
 					if (state.pendingQuestion || state.pendingApproval) {
 						finish("Task paused for local human question/approval; execution aborted, inspect retained conversation");
-						return;
-					}
-					if (state.errorMessage) {
-						finish(state.errorMessage);
 						return;
 					}
 					sawRunning ||= state.isStreaming;

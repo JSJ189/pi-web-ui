@@ -5,6 +5,8 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createDeviceTaskExecutor } from "../../server/device-center/executor.js";
 import type { LocalBot } from "../../server/device-center/bots.js";
 import type { ClientMessage, UiState } from "../../server/protocol.js";
+import { deviceTaskFailure } from "../../server/device-center/task-error.js";
+import { DeviceExecutionError } from "../../server/device-center/execution-failure.js";
 
 const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -41,6 +43,8 @@ async function fixture(
 		changeCwd?: boolean;
 		gap?: boolean;
 		refuseNew?: boolean;
+		onNew?: (socket: WebSocket, state: UiState) => void;
+		onHello?: (socket: WebSocket, state: UiState) => void;
 		onSession?: (taskId: string, sessionId: string | undefined) => void;
 	} = {},
 ) {
@@ -77,11 +81,18 @@ async function fixture(
 				} as UiState;
 				socket.send(JSON.stringify({ type: "ready", clientId: msg.clientId }));
 				// ready precedes attach completion: no new_chat until this snapshot.
-				setImmediate(() => push(socket));
+				setImmediate(() => {
+					if (opts.onHello) opts.onHello(socket, snapshot);
+					else push(socket);
+				});
 			} else if (msg.type === "set_cwd") {
 				push(socket, { cwd, messages: [assistant("RESUMED HISTORY")] });
 				socket.send(JSON.stringify({ type: "transition_progress", kind: "cwd", phase: "done" }));
 			} else if (msg.type === "new_chat") {
+				if (opts.onNew) {
+					opts.onNew(socket, snapshot);
+					return;
+				}
 				if (opts.refuseNew) {
 					socket.send(
 						JSON.stringify({
@@ -178,6 +189,23 @@ describe("device task executor", () => {
 		expect(prompt?.text).toContain("final answer is delivered automatically to the group");
 	});
 
+	it("rejects a previous client's initial snapshot without prompting or aborting its conversation", async () => {
+		const f = await fixture(undefined, {
+			onHello: (socket, state) =>
+				socket.send(
+					JSON.stringify({
+						type: "snapshot",
+						state: { ...state, clientId: "device-task-previous-client", conversationId: "previous-task-chat" },
+					}),
+				),
+		});
+		const error = await f.executor.run(task()).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(DeviceExecutionError);
+		expect((error as DeviceExecutionError).failure).toMatchObject({ phase: "init", category: "ownership" });
+		expect(f.received.map((message) => message.type)).toEqual(["hello"]);
+		expect(deviceTaskFailure(error)).not.toContain("previous-client");
+	});
+
 	it("rejects initial workspace drift without switching cwd or prompting", async () => {
 		const f = await fixture(undefined, { changeCwd: true });
 		await expect(f.executor.run(task())).rejects.toThrow("fixed cwd");
@@ -234,7 +262,12 @@ describe("device task executor", () => {
 				if (kind.startsWith("pending")) delta(socket, state, { [kind]: { id: "approval" } } as Partial<UiState>);
 				else socket.send(JSON.stringify({ type: kind, id: "approval", conversationId: state.conversationId }));
 			});
-			await expect(f.executor.run(task())).rejects.toThrow(/paused.*human/);
+			const error = await f.executor.run(task()).catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(DeviceExecutionError);
+			expect((error as DeviceExecutionError).failure).toMatchObject({
+				phase: "approval",
+				category: "approval_required",
+			});
 			await vi.waitFor(() => expect(f.received.some((m) => m.type === "abort")).toBe(true));
 			expect(f.received.map((m) => m.type)).not.toEqual(expect.arrayContaining(["tool_approval_answer"]));
 			expect(
@@ -333,6 +366,119 @@ describe("device task executor", () => {
 			});
 			await expect(f.executor.run(task())).rejects.toThrow(/without assistant text|Model failed/);
 		}
+	});
+
+	it.each([
+		["Configured Bot model is unavailable", "model_missing"],
+		["No API key found for provider", "model_auth"],
+		["401 Unauthorized", "model_auth"],
+		["429 Too many requests", "model_rate_limit"],
+		["503 Service unavailable", "model_unavailable"],
+		["Unsupported command", "unsupported_command"],
+		["Bot execution capability has been revoked", "capability_revoked"],
+		["Tool bash is denied", "tool_denied"],
+		["unrecognized private provider dump", "execution_failed"],
+	])("reports safe reason for %s without provider data", async (reason, category) => {
+		const secret = "CREDENTIAL_SENTINEL_7fa43";
+		const raw = `${reason}\nAuthorization: Bearer ${secret}\nhttps://user:${secret}@provider.invalid/private?api_key=${secret}\n/Users/private/.pi/auth.json C:\\private\\credentials.json\n{\"rawDump\":\"${secret}\"}`;
+		const f = await fixture((socket, state) => {
+			delta(socket, state, { isStreaming: false }, [
+				{ ...assistant("partial"), stopReason: "error", errorMessage: raw },
+			]);
+		});
+		const error = await f.executor.run(task()).catch((error: unknown) => error);
+		expect(error).toBeInstanceOf(DeviceExecutionError);
+		const failure = error as DeviceExecutionError;
+		expect(failure.failure.category).toBe(category);
+		expect(failure.failure.phase).toBe(category === "tool_denied" ? "tool" : "model");
+		expect(failure.message).toContain(secret); // Local-only diagnostic remains available.
+		const outgoing = deviceTaskFailure(error);
+		expect(outgoing).toContain(`category=${category}`);
+		expect(outgoing).not.toContain(secret);
+		expect(outgoing).not.toMatch(
+			/CREDENTIAL_SENTINEL|provider\.invalid|https?:|Users|credentials\.json|rawDump|Authorization|partial/,
+		);
+	});
+
+	it.each(["errorMessage", "error"])("fails on snapshot %s during initialization and new_chat", async (field) => {
+		for (const stage of ["init", "new_chat"] as const) {
+			const pushFailure = (socket: WebSocket, state: UiState) =>
+				socket.send(
+					JSON.stringify({
+						type: "snapshot",
+						state: { ...state, rev: state.rev + 1, [field]: "Configured Bot model is unavailable PRIVATE_SENTINEL" },
+					}),
+				);
+			const f = await fixture(undefined, stage === "init" ? { onHello: pushFailure } : { onNew: pushFailure });
+			const error = await f.executor.run(task()).catch((error: unknown) => error);
+			expect(error).toBeInstanceOf(DeviceExecutionError);
+			expect((error as DeviceExecutionError).failure).toMatchObject({ phase: stage, category: "model_missing" });
+			expect(deviceTaskFailure(error)).not.toContain("PRIVATE_SENTINEL");
+			expect(f.received.some((message) => message.type === "prompt")).toBe(false);
+		}
+	});
+
+	it("records handshake errors before ready without exposing notice text", async () => {
+		const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+		await once(server, "listening");
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("No address");
+		server.on("connection", (socket) =>
+			socket.on("message", () =>
+				socket.send(
+					JSON.stringify({
+						type: "notice",
+						level: "error",
+						text: "Invalid Bot execution capability PRIVATE_SENTINEL",
+					}),
+				),
+			),
+		);
+		const executor = createDeviceTaskExecutor({
+			localOrigin: `http://127.0.0.1:${address.port}`,
+			bot,
+			cwd,
+			allowExecution: true,
+		});
+		cleanup.push(async () => {
+			await executor.close();
+			for (const socket of server.clients) socket.terminate();
+			await new Promise<void>((done) => server.close(() => done()));
+		});
+		const error = await executor.run(task()).catch((error: unknown) => error);
+		expect((error as DeviceExecutionError).failure).toMatchObject({
+			phase: "handshake",
+			category: "capability_revoked",
+		});
+		expect(deviceTaskFailure(error)).not.toContain("PRIVATE_SENTINEL");
+	});
+
+	it("uses the English notice reason and records new_chat failure phase", async () => {
+		const f = await fixture(undefined, {
+			onNew: (socket) =>
+				socket.send(
+					JSON.stringify({
+						type: "notice",
+						level: "error",
+						text: "无法初始化",
+						textEn: "Configured Bot model is unavailable",
+					}),
+				),
+		});
+		const error = await f.executor.run(task()).catch((error: unknown) => error);
+		expect((error as DeviceExecutionError).failure).toMatchObject({ phase: "new_chat", category: "model_missing" });
+	});
+
+	it("reports capability rejection on WebSocket close without leaking the close reason", async () => {
+		const f = await fixture(undefined, {
+			onNew: (socket) => socket.close(1008, "Invalid Bot execution capability PRIVATE_SENTINEL"),
+		});
+		const error = await f.executor.run(task()).catch((error: unknown) => error);
+		expect((error as DeviceExecutionError).failure).toMatchObject({
+			phase: "new_chat",
+			category: "capability_revoked",
+		});
+		expect(deviceTaskFailure(error)).not.toContain("PRIVATE_SENTINEL");
 	});
 
 	it("limits UTF-8 reports to 16 KiB with a truncation notice", async () => {

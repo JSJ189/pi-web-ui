@@ -2839,7 +2839,15 @@ wss.on("connection", (ws) => {
 	// Plugins broadcast to every open socket; unregister on close below.
 	// Plugins broadcast to every open socket; unregister on close below. The
 	// cid getter lets plugins target THIS socket via host.sendTo(clientId).
-	const removePluginSender = pluginMgr.addSender(send, () => clientId);
+	const removePluginSender = pluginMgr.addSender(
+		(msg) => {
+			// Task sockets receive only their executor/session events. Global plugin
+			// notices have no session attribution and must not abort unrelated tasks.
+			if (!clientId || clientId.startsWith("device-task-")) return;
+			send(msg);
+		},
+		() => clientId,
+	);
 
 	/** DOM 授权落盘 + notice 反馈（两步握手的 grant 与单步 revoke 共用收尾）。
 	 *  cs 缺席（未 attach 完成）时只落盘不提示——消息本来就会在 attach 前排队。 */

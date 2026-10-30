@@ -1059,7 +1059,7 @@ export const Message = memo(function Message({
 			ref={cardRef}
 			className={`msg msg-${message.role}${isGoalReview ? " msg-goal-review" : ""}${
 				exportSelected ? " msg-export-selected" : ""
-			}${readOnly ? " msg-readonly" : ""}`}
+			}${readOnly ? " msg-readonly" : ""}${messageLabel && message.id.startsWith("group-") ? " msg-group" : ""}`}
 			data-role={message.role}
 			data-msg-id={message.id}
 			onContextMenu={onMsgContextMenu}
@@ -1097,7 +1097,11 @@ export const Message = memo(function Message({
 									: `${t("plugin")} · ${message.customType ?? t("unknown")}`
 						: roleLabel(message.role, t)}
 				</span>
-				{messageLabel && <span className="msg-model">{messageLabel}</span>}
+				{messageLabel && (
+					<span className="msg-sender" data-initial={Array.from(messageLabel)[0]}>
+						{messageLabel}
+					</span>
+				)}
 				{message.model && <span className="msg-model">{message.model}</span>}
 				{message.timestamp && <span className="msg-time">{formatTime(message.timestamp)}</span>}
 				{qnIndex !== undefined && onJump && (

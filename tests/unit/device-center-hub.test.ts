@@ -131,9 +131,13 @@ describe("device center hub", () => {
 			"X-Device-Id": first.deviceId,
 		});
 		expect(listed.status).toBe(401);
-		expect((await f.request("/api/bots", undefined, cookie)).body.bots).toHaveLength(2);
+		const publicBots = (await f.request("/api/bots", undefined, cookie)).body.bots;
+		expect(publicBots).toHaveLength(2);
+		expect(publicBots.find((bot: any) => bot.id === second.botId)).toMatchObject({ deviceName: "Linux" });
 		const room = (await f.request("/api/rooms", { name: "Bots", botIds: [first.botId, second.botId] }, cookie)).body
 			.room;
+		const roomDetail = await f.request(`/api/rooms/${room.id}`, undefined, cookie);
+		expect(roomDetail.body.bots.find((bot: any) => bot.id === second.botId)).toMatchObject({ deviceName: "Linux" });
 		const path = `/api/agent/rooms/${room.id}/messages`;
 		expect((await f.request(path, { text: "forged", sourceBotId: second.botId }, "", headers(first))).status).toBe(403);
 		const task = (
