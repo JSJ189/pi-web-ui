@@ -72,6 +72,73 @@ export const WIDGET_CSS = `
 	transform: translateY(0) scale(1);
 }
 
+.pi-l2d-bubble.pi-l2d-bubble-thought {
+	border-style: dashed;
+	border-color: color-mix(in srgb, var(--accent, #6366f1) 45%, var(--border, #334155));
+	background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-elev2, #1e222b));
+	border-radius: 16px;
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28), 0 0 14px color-mix(in srgb, var(--accent, #6366f1) 20%, transparent);
+}
+
+.pi-l2d-bubble.pi-l2d-bubble-thought::after {
+	display: none;
+}
+
+.pi-l2d-bubble-badge {
+	display: none;
+	align-items: center;
+	gap: 4px;
+	margin-bottom: 4px;
+	font-size: 11px;
+	font-weight: 600;
+	letter-spacing: 0.02em;
+	color: var(--accent, #6366f1);
+	line-height: 1;
+	user-select: none;
+}
+
+.pi-l2d-bubble-badge-icon {
+	font-size: 12px;
+	filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+}
+
+.pi-l2d-bubble-badge-label {
+	font-style: normal;
+	opacity: 0.9;
+}
+
+.pi-l2d-thought-dots {
+	display: none;
+}
+
+.pi-l2d-bubble.pi-l2d-bubble-thought .pi-l2d-thought-dots {
+	display: block;
+}
+
+.pi-l2d-thought-dot {
+	position: absolute;
+	border-radius: 50%;
+	background: color-mix(in srgb, var(--accent, #6366f1) 12%, var(--bg-elev2, #1e222b));
+	border: 1px dashed color-mix(in srgb, var(--accent, #6366f1) 45%, var(--border, #334155));
+	pointer-events: none;
+}
+
+.pi-l2d-dot-1 {
+	bottom: -9px;
+	left: 50%;
+	width: 9px;
+	height: 9px;
+	transform: translateX(-50%);
+}
+
+.pi-l2d-dot-2 {
+	bottom: -16px;
+	left: 52%;
+	width: 6px;
+	height: 6px;
+	transform: translateX(-50%);
+}
+
 .pi-l2d-bubble::after {
 	content: "";
 	position: absolute;

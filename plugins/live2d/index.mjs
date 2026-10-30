@@ -924,6 +924,60 @@ export default {
 			);
 		}
 
+		// ── 2.5 注册内联状态标记（Inline Marker：[[live2d:thought:...]]）──
+		const unmarkers = [];
+		if (typeof host.registerMarker === "function") {
+			const off = host.registerMarker({
+				name: "live2d",
+				label: "Live2D 看板娘心声",
+				guidance: [
+					"- Live2D companion inner voice: [[live2d:thought:<text>]] (express inner feelings/monologue above the Live2D model; optional parameters: emotion=<happy|sad|angry|surprised|blush|wink|neutral>, duration=<ms>).",
+				],
+				getGuidance(lang = "en") {
+					if (lang === "zh") {
+						return [
+							"- Live2D 看板娘心声：[[live2d:thought:<心声内容>]]（在看板娘上方浮现心声气泡；可选参数：emotion=<happy|sad|angry|surprised|blush|wink|neutral>，duration=<毫秒>）。",
+						];
+					}
+					return [
+						"- Live2D companion inner voice: [[live2d:thought:<text>]] (express inner feelings/monologue above the Live2D model; optional parameters: emotion=<happy|sad|angry|surprised|blush|wink|neutral>, duration=<ms>).",
+					];
+				},
+				async apply(token, _ctx, _state, lang = "en") {
+					const op = String(token?.op || "thought").toLowerCase();
+					const isThought = op === "thought" || op === "heart" || op === "mind" || op === "inner";
+					let text = token?.kwargs?.text || token?.kwargs?.msg || token?.kwargs?.content || "";
+					if (!text && Array.isArray(token?.args) && token.args.length > 0) {
+						text = token.args.join(", ").trim();
+					}
+					if (!text) {
+						return {
+							applied: false,
+							error: lang === "zh" ? "live2d 标记缺少心声内容" : "live2d marker requires message text",
+						};
+					}
+					const expression = token?.kwargs?.emotion || token?.kwargs?.expression || token?.kwargs?.exp || "";
+					const duration =
+						Number(token?.kwargs?.duration) > 0 ? Number(token?.kwargs?.duration) : isThought ? 5000 : 4500;
+
+					host.broadcast({
+						type: "live2d:action",
+						action: isThought ? "thought" : "bubble",
+						text,
+						expression: expression || undefined,
+						duration,
+						thought: isThought,
+					});
+
+					return {
+						applied: true,
+						feedback: isThought ? `Live2D inner thought: ${text}` : `Live2D speech: ${text}`,
+					};
+				},
+			});
+			if (typeof off === "function") unmarkers.push(off);
+		}
+
 		// ── 3. 伴随 AI 会话运行事件的情绪联动 ──────────────────────
 		const unevents = [];
 		if (typeof host.onRunEvent === "function") {
@@ -957,6 +1011,11 @@ export default {
 				} catch {}
 			}
 			for (const u of untools) {
+				try {
+					u();
+				} catch {}
+			}
+			for (const u of unmarkers) {
 				try {
 					u();
 				} catch {}
