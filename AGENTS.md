@@ -75,6 +75,8 @@ pi-web-ui 是 pi 编码智能体（`@earendil-works/pi-coding-agent` SDK）的 W
 
 独立 Hub 与本机连接器位于 `server/device-center/`，部署与边界见 `docs/device-center.md`。主界面「设备中心」为原生 `devices` 视图（`DeviceCenter.tsx`），旧 `/devices` 重定向到该视图；配对接口仅允许回环来源与同源写入；群成员统一为 Bot，设备仅负责承载与连接。群任务仅派给显式 @ 的稳定 Bot ID，机器人接力继承父任务预算，禁止无界互派。`bots.ts` 按本机设备身份保存 Bot 的固定项目根、角色、模型及工具/Skill/MCP 白名单；群使用 `botIds`，消息使用 `targetBotIds`，任务与 `device_collab` 文件同步共用 Bot registry lease/revision；执行会话不得冒用其他 Bot。忙碌或停止未确认时禁止换根，旧文件包不得落入新根。文件同步先暂存预览后按 revision 导入，已有差异必须显式覆盖；凭据不得进入工具回执。Hub 默认单端口 `/device/<id>/` 路径访问设备，以 CSP sandbox（禁止 allow-same-origin）与设备专属随机能力路径隔离远程页面；旧独立域/端口保留兼容。跨设备代理只放行账号范围群聊接口，不得暴露本机绑定、目录与设置接口。
 
+设备中心远程桌面由 `desktop.ts` 经既有 WebSocket 传输原生 JPEG，`desktop-native.ts` 管 Windows/macOS 助手，`desktop-linux.ts` 管 Linux X11（ffmpeg/xdotool）；不再依赖 VNC/noVNC。只读由服务端按连接强制，浏览器绘制 ACK 限制跨设备待确认帧，断开须释放输入。macOS 14+ 需屏幕录制/辅助功能权限，Wayland 尚不支持；启用状态保存在 `desktop-settings.json`。
+
 ### 画布协同
 
 画布编辑版本、运行代次和产物边界见 `docs/architecture-canvas.md`。拓扑保存必须带 revision 并等待 ACK；运行态不得覆盖拓扑或复活删除的工程。分支按本轮激活边汇聚，返工必须有明确决策和次数边界。隔离产物通过 `server/canvas/canvas-workspace.ts` 进入集成 worktree 验证，不得静默回落或自动写回主树。

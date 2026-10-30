@@ -1,48 +1,55 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import express from "express";
 import { chromium } from "playwright-core";
 import { CHROME_PATH } from "../lib/chrome.mjs";
-import { createServer, type Server } from "node:http";
-import { createServer as createTcpServer, type Socket } from "node:net";
+import { createServer, request, type Server } from "node:http";
 import { once } from "node:events";
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocket } from "ws";
-import {
-	createDeviceDesktop,
-	desktopLocalRequest,
-	resolveDesktopAsset,
-	DESKTOP_LIMITS,
-} from "../../server/device-center/desktop.js";
+import { createDeviceDesktop, desktopLocalRequest, DESKTOP_LIMITS } from "../../server/device-center/desktop.js";
+import type { NativeDesktopInput } from "../../server/device-center/desktop-native.js";
 
+type Native = NonNullable<Parameters<typeof createDeviceDesktop>[0]["native"]>;
+type CaptureOptions = Parameters<Native["start"]>[0];
 const cleanups: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
-	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	try {
+		for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+	} finally {
+		vi.restoreAllMocks();
+	}
 });
-async function listen(server: Server | ReturnType<typeof createTcpServer>) {
+async function listen(server: Server) {
 	server.listen(0, "127.0.0.1");
 	await once(server, "listening");
 	cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
 	return (server.address() as { port: number }).port;
 }
-async function fixture(env: NodeJS.ProcessEnv = { PI_DEVICE_DESKTOP: "1" }) {
-	const tcp = createTcpServer();
-	const peers = new Set<Socket>();
-	tcp.on("connection", (socket) => {
-		peers.add(socket);
-		socket.on("error", () => {}); // Setup TCP probes may close while the mock writes its RFB greeting.
-		socket.on("close", () => peers.delete(socket));
-	});
-	const vncPort = await listen(tcp);
+async function fixture(options: { env?: NodeJS.ProcessEnv; supported?: boolean; dataDir?: string } = {}) {
 	const app = express();
-	const dataDir = mkdtempSync(join(tmpdir(), "desktop-route-"));
-	cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
+	const dataDir = options.dataDir ?? mkdtempSync(join(tmpdir(), "desktop-route-"));
+	if (!options.dataDir) cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
+	const sessions: { options: CaptureOptions; input: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }[] = [];
+	const native: Native = {
+		status: () => ({
+			supported: options.supported !== false,
+			backend: "fake",
+			...(options.supported === false ? { reason: "No display" } : {}),
+		}),
+		start: vi.fn((capture: CaptureOptions) => {
+			const session = { options: capture, input: vi.fn(), close: vi.fn() };
+			sessions.push(session);
+			return session;
+		}),
+	};
 	const desktop = createDeviceDesktop({
 		dataDir,
 		app,
 		authorize: (req) => req.headers.authorization === "Bearer test",
-		env: { PI_DEVICE_VNC_PORT: String(vncPort), ...env },
+		env: options.env ?? { PI_DEVICE_DESKTOP: "1" },
+		native,
 	});
 	const parent = express();
 	parent.use("/nested", app);
@@ -53,200 +60,342 @@ async function fixture(env: NodeJS.ProcessEnv = { PI_DEVICE_DESKTOP: "1" }) {
 		if (!desktop.handleUpgrade(req, socket, head)) socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
 	});
 	const port = await listen(http);
-	cleanups.push(() => {
-		desktop.close();
-		for (const peer of peers) peer.destroy();
-	});
-	return { tcp, desktop, port, url: `http://127.0.0.1:${port}`, peers };
+	cleanups.push(() => desktop.close());
+	const url = `http://127.0.0.1:${port}`;
+	return {
+		desktop,
+		native,
+		sessions,
+		port,
+		url,
+		dataDir,
+		post: (path: string, body?: unknown) =>
+			fetch(url + "/api/device-desktop/setup/" + path, {
+				method: "POST",
+				headers: { ...headers, origin: url, "content-type": "application/json" },
+				body: body === undefined ? undefined : JSON.stringify(body),
+			}),
+	};
 }
 const headers = { authorization: "Bearer test" };
-function wsClient(port: number, options: Record<string, string> = headers) {
-	const ws = new WebSocket(`ws://127.0.0.1:${port}/desktop-ws`, { headers: options });
+function wsClient(port: number, path = "/desktop-ws", extra: Record<string, string> = headers) {
+	const ws = new WebSocket(`ws://127.0.0.1:${port}${path}`, { headers: extra });
+	const messages: { data: Buffer; binary: boolean }[] = [];
+	ws.on("message", (data, binary) => messages.push({ data: Buffer.from(data as Buffer), binary }));
 	ws.on("error", () => {});
 	cleanups.push(() => ws.terminate());
-	return ws;
+	return { ws, messages };
 }
+async function connected(port: number, path = "/desktop-ws") {
+	const client = wsClient(port, path);
+	await once(client.ws, "open");
+	return client;
+}
+async function rejected(port: number, status: number, path = "/desktop-ws", extra: Record<string, string> = headers) {
+	const { ws } = wsClient(port, path, extra);
+	const response = once(ws, "unexpected-response");
+	expect((await response)[1].statusCode).toBe(status);
+	ws.terminate();
+}
+const inputs: NativeDesktopInput[] = [
+	{ type: "pointer", x: 0.25, y: 0.75, action: "move" },
+	{ type: "pointer", x: 0.25, y: 0.75, action: "down", button: 0 },
+	{ type: "pointer", x: 0.25, y: 0.75, action: "up", button: 0 },
+	{ type: "wheel", deltaY: -120 },
+	{ type: "key", code: "KeyA", action: "down" },
+	{ type: "key", code: "KeyA", action: "up" },
+	{ type: "text", text: "Hello 世界" },
+	{ type: "release" },
+];
+// An actual 1×1 red JPEG exercises browser decoding as well as binary transport.
+const tinyImage = Buffer.from(
+	"/9j/4AAQSkZJRgABAQAAAQABAAD/4gHYSUNDX1BST0ZJTEUAAQEAAAHIAAAAAAQwAABtbnRyUkdCIFhZWiAH4AABAAEAAAAAAABhY3NwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAA9tYAAQAAAADTLQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAlkZXNjAAAA8AAAACRyWFlaAAABFAAAABRnWFlaAAABKAAAABRiWFlaAAABPAAAABR3dHB0AAABUAAAABRyVFJDAAABZAAAAChnVFJDAAABZAAAAChiVFJDAAABZAAAAChjcHJ0AAABjAAAADxtbHVjAAAAAAAAAAEAAAAMZW5VUwAAAAgAAAAcAHMAUgBHAEJYWVogAAAAAAAAb6IAADj1AAADkFhZWiAAAAAAAABimQAAt4UAABjaWFlaIAAAAAAAACSgAAAPhAAAts9YWVogAAAAAAAA9tYAAQAAAADTLXBhcmEAAAAAAAQAAAACZmYAAPKnAAANWQAAE9AAAApbAAAAAAAAAABtbHVjAAAAAAAAAAEAAAAMZW5VUwAAACAAAAAcAEcAbwBvAGcAbABlACAASQBuAGMALgAgADIAMAAxADb/2wBDAAMCAgICAgMCAgIDAwMDBAYEBAQEBAgGBgUGCQgKCgkICQkKDA8MCgsOCwkJDRENDg8QEBEQCgwSExIQEw8QEBD/2wBDAQMDAwQDBAgEBAgQCwkLEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBD/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAj/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAABwn/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdAAYqm//Z",
+	"base64",
+);
 
-describe("device desktop local bridge", () => {
-	it.skipIf(!CHROME_PATH)(
-		"loads noVNC modules under a proxy prefix and completes a real RFB handshake",
-		async () => {
-			const f = await fixture();
-			f.tcp.on("connection", (socket) => {
-				let state = 0;
-				let pending = Buffer.alloc(0);
-				socket.write("RFB 003.008\n");
-				socket.on("data", (data) => {
-					pending = Buffer.concat([pending, Buffer.from(data)]);
-					for (;;) {
-						const count = state === 0 ? 12 : 1;
-						if (state > 2 || pending.length < count) return;
-						pending = pending.subarray(count);
-						if (state === 0) socket.write(Buffer.from([1, 1]));
-						if (state === 1) socket.write(Buffer.alloc(4));
-						if (state === 2) {
-							const name = Buffer.from("Mock desktop");
-							const init = Buffer.alloc(24 + name.length);
-							init.writeUInt16BE(32, 0);
-							init.writeUInt16BE(32, 2);
-							Buffer.from([32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0]).copy(init, 4);
-							init.writeUInt32BE(name.length, 20);
-							name.copy(init, 24);
-							socket.write(init);
-						}
-						state++;
-					}
-				});
-			});
-			const browser = await chromium.launch({
-				executablePath: CHROME_PATH,
-				headless: true,
-				timeout: 5000,
-				args: ["--no-sandbox"],
-			});
-			cleanups.push(() => browser.close());
-			const page = await browser.newPage({ extraHTTPHeaders: headers, viewport: { width: 390, height: 740 } });
-			const errors: string[] = [];
-			page.on("pageerror", (error) => errors.push(error.message));
-			page.on("response", (response) => {
-				if (response.status() >= 400) errors.push(response.url() + ":" + response.status());
-			});
-			await page.goto(f.url + "/nested/desktop", { timeout: 5000 });
-			await page
-				.locator("#connect")
-				.click({ timeout: 3000 })
-				.catch(async (error) => {
-					throw new Error(
-						String(error) +
-							" status=" +
-							(await page.locator("#status").textContent()) +
-							" errors=" +
-							JSON.stringify(errors),
-					);
-				});
-			try {
-				await page.waitForFunction(
-					() => ["Connected", "已连接"].includes(document.getElementById("status")?.textContent ?? ""),
-					undefined,
-					{
-						timeout: 5000,
-					},
-				);
-			} catch (error) {
-				throw new Error(
-					String(error) +
-						" status=" +
-						(await page.locator("#status").textContent()) +
-						" errors=" +
-						JSON.stringify(errors),
-				);
-			}
-			expect(await page.locator("#screen canvas").count()).toBe(1);
-			if (process.env.PI_DEVICE_DESKTOP_SCREENSHOT) {
-				mkdirSync("artifacts/device-center", { recursive: true });
-				await page.screenshot({ path: "artifacts/device-center/desktop.png", fullPage: true });
-			}
-			expect(await page.locator("#cad").isDisabled()).toBe(true);
-			await page.locator("#viewonly").uncheck();
-			expect(await page.locator("#cad").isEnabled()).toBe(true);
-			expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-			await page.locator("#disconnect").click();
-			expect(["Disconnected", "已断开"]).toContain(await page.locator("#status").textContent());
-			expect(errors).toEqual([]);
-		},
-		15_000,
-	);
-	it("requires explicit enablement and independent authorization", async () => {
-		const f = await fixture({ PI_DEVICE_DESKTOP: "0" });
-		expect((await fetch(f.url + "/api/device-desktop/status")).status).toBe(403);
-		const status = await (await fetch(f.url + "/api/device-desktop/status", { headers })).json();
-		expect(status).toMatchObject({
-			enabled: false,
-			available: false,
-			endpointConfigured: true,
-			readOnlyEnforcement: "vnc-server",
-		});
-		const ws = wsClient(f.port);
-		const response = once(ws, "unexpected-response");
-		expect((await response)[1].statusCode).toBe(503);
-		ws.terminate();
-	});
-	it("rejects LAN Host/Origin, missing authorization, invalid target configuration", async () => {
+describe("device desktop native route", () => {
+	it("reports native support and server permissions consistently without installing packages", async () => {
 		const f = await fixture();
-		for (const extra of [{}, { ...headers, origin: "https://evil.example" }, { ...headers, host: "192.168.0.4" }]) {
-			const ws = wsClient(f.port, extra);
-			const response = once(ws, "unexpected-response");
-			expect((await response)[1].statusCode).toBe(403);
-			ws.terminate();
-		}
-		const invalid = await fixture({ PI_DEVICE_VNC_HOST: "192.168.1.2", PI_DEVICE_VNC_PORT: "80" });
-		expect(await (await fetch(invalid.url + "/api/device-desktop/status", { headers })).json()).toMatchObject({
-			available: false,
-			endpointConfigured: false,
+		const response = await fetch(f.url + "/api/device-desktop/status", { headers });
+		expect(response.status).toBe(200);
+		const status = await response.json();
+		expect(status).toMatchObject({
+			os: process.platform,
+			enabled: true,
+			environmentEnabled: true,
+			available: true,
+			supported: true,
+			backend: "fake",
+			readOnlyEnforcement: "server",
+			clientViewOnlyIsPermission: true,
+			installation: { state: "not-required", log: expect.any(String) },
 		});
+		expect(await (await fetch(f.url + "/api/device-desktop/setup/status", { headers })).json()).toEqual(status);
+		const installed = await f.post("install");
+		expect(installed.status).toBe(200);
+		expect(await installed.json()).toMatchObject({ installation: status.installation });
+		expect(existsSync(join(f.dataDir, "desktop-runtime"))).toBe(false);
+		expect(f.native.start).not.toHaveBeenCalled();
 	});
-	it("checks physical loopback and exact origin independent of proxy headers", () => {
+	it("requires enablement and reports unsupported backends without starting capture", async () => {
+		for (const options of [{ env: {} }, { supported: false }]) {
+			const f = await fixture(options);
+			const status = await (await fetch(f.url + "/api/device-desktop/status", { headers })).json();
+			expect(status.available).toBe(false);
+			if (options.supported === false)
+				expect(status).toMatchObject({ supported: false, backend: "fake", reason: "No display" });
+			else expect(status.enabled).toBe(false);
+			await rejected(f.port, 503);
+			expect(f.native.start).not.toHaveBeenCalled();
+		}
+	});
+	it("requires independent authorization and local Host/Origin on HTTP and WebSocket", async () => {
+		const f = await fixture();
+		for (const extra of [
+			{},
+			{ ...headers, origin: "https://evil.example" },
+			{ ...headers, host: "192.168.0.4" },
+			{ ...headers, origin: f.url + "/path" },
+		]) {
+			const status = await new Promise<number | undefined>((resolve, reject) => {
+				const req = request(f.url + "/api/device-desktop/status", { headers: extra }, (res) => {
+					res.resume();
+					resolve(res.statusCode);
+				});
+				req.on("error", reject);
+				req.end();
+			});
+			expect(status).toBe(403);
+			await rejected(f.port, 403, "/desktop-ws", extra);
+		}
+		for (const path of ["enable", "install"]) {
+			expect((await fetch(f.url + "/api/device-desktop/setup/" + path, { method: "POST", headers })).status).toBe(403);
+		}
+		expect(f.native.start).not.toHaveBeenCalled();
+	});
+	it("checks physical loopback and exact origin independent of forwarded headers", () => {
 		const req = (remoteAddress: string, host: string, origin?: string) =>
-			({ socket: { remoteAddress }, headers: { host, origin } }) as any;
+			({
+				socket: { remoteAddress },
+				headers: { host, origin, "x-forwarded-for": "127.0.0.1", "x-forwarded-host": "localhost" },
+			}) as any;
 		expect(desktopLocalRequest(req("::ffff:127.0.0.1", "127.0.0.1:8787", "http://127.0.0.1:8787"))).toBe(true);
 		expect(desktopLocalRequest(req("::1", "[::1]:8787", "http://[::1]:8787"))).toBe(true);
-		expect(desktopLocalRequest(req("10.0.0.1", "localhost"))).toBe(false);
-		expect(desktopLocalRequest(req("127.0.0.1", "localhost", "null"))).toBe(false);
-		expect(desktopLocalRequest(req("127.0.0.1", "localhost:8787", "http://localhost:9999"))).toBe(false);
+		for (const args of [
+			["10.0.0.1", "localhost"],
+			["127.0.0.1", "localhost", "null"],
+			["127.0.0.1", "localhost:8787", "http://localhost:9999"],
+			["127.0.0.1", "localhost", "http://localhost/"],
+		] as const)
+			expect(desktopLocalRequest(req(args[0], args[1], args[2]))).toBe(false);
 	});
-	it("proxies raw binary RFB over real TCP and WebSocket and cleans both sides", async () => {
+	it("persists enablement, validates writes and honors environment enablement", async () => {
+		const f = await fixture({ env: {} });
+		for (const body of [{}, { enabled: "true" }, { enabled: true, extra: true }])
+			expect((await f.post("enable", body)).status).toBe(400);
+		expect((await f.post("enable", { enabled: true })).status).toBe(200);
+		expect(JSON.parse(readFileSync(join(f.dataDir, "desktop-settings.json"), "utf8"))).toEqual({ enabled: true });
+		const restored = await fixture({ env: {}, dataDir: f.dataDir });
+		expect(await (await fetch(restored.url + "/api/device-desktop/status", { headers })).json()).toMatchObject({
+			enabled: true,
+			environmentEnabled: false,
+			available: true,
+		});
+		const forced = await fixture();
+		expect(await (await forced.post("enable", { enabled: false })).json()).toMatchObject({
+			enabled: true,
+			environmentEnabled: true,
+		});
+	});
+	it("does not publish enabled state when saving settings fails", async () => {
+		const f = await fixture({ env: {} });
+		mkdirSync(join(f.dataDir, "desktop-settings.json"));
+		expect((await f.post("enable", { enabled: true })).status).toBe(500);
+		expect(await (await fetch(f.url + "/api/device-desktop/status", { headers })).json()).toMatchObject({
+			enabled: false,
+			available: false,
+		});
+		await rejected(f.port, 503);
+	});
+	it("enforces read-only by default and for every value except explicit viewOnly=0", async () => {
 		const f = await fixture();
-		const connection = once(f.tcp, "connection");
-		const ws = wsClient(f.port);
-		await once(ws, "open");
-		const [peer] = await connection;
-		const message = once(ws, "message");
-		peer.write("RFB 003.008\n");
-		const [data, binary] = await message;
-		expect(binary).toBe(true);
-		expect(data.toString()).toBe("RFB 003.008\n");
-		const input = once(peer, "data");
-		ws.send(Buffer.from("RFB 003.008\n"));
-		expect((await input)[0].toString()).toBe("RFB 003.008\n");
-		const closed = once(peer, "close");
+		for (const query of ["", "?viewOnly=1", "?viewOnly=false", "?viewOnly="]) {
+			const { ws, messages } = await connected(f.port, "/desktop-ws" + query);
+			const session = f.sessions.at(-1)!;
+			expect(session.options.readOnly).toBe(true);
+			for (const input of inputs) ws.send(JSON.stringify(input));
+			const processed = once(ws, "pong");
+			ws.ping();
+			await processed;
+			const frame = Buffer.from("fake JPEG");
+			session.options.onFrame(frame);
+			await vi.waitFor(() =>
+				expect(messages.some((message) => message.binary && message.data.equals(frame))).toBe(true),
+			);
+			expect(
+				messages.filter((message) => !message.binary).map((message) => JSON.parse(message.data.toString())),
+			).toContainEqual({ type: "ready" });
+			expect(session.input).not.toHaveBeenCalled();
+			const closed = once(ws, "close");
+			ws.close();
+			await closed;
+			await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+		}
+	});
+	it("forwards validated JSON inputs only after explicit control permission", async () => {
+		const f = await fixture();
+		const { ws } = await connected(f.port, "/nested/desktop-ws?viewOnly=0");
+		const session = f.sessions[0];
+		expect(session.options.readOnly).toBe(false);
+		for (const input of inputs) ws.send(JSON.stringify(input));
+		await vi.waitFor(() => expect(session.input.mock.calls.map(([event]) => event)).toEqual(inputs));
+	});
+	it.each([
+		"{",
+		"null",
+		"[]",
+		"{}",
+		'{"type":"unknown"}',
+		'{"type":"pointer","x":2,"y":0,"action":"move"}',
+		'{"type":"wheel","deltaY":"1"}',
+		'{"type":"key","code":"KeyA","action":"press"}',
+		'{"type":"text","text":1}',
+		'{"type":"pointer","x":0,"y":0,"action":"down"}',
+		'{"type":"pointer","x":0,"y":0,"action":"down","button":3}',
+		'{"type":"wheel","deltaY":10001}',
+		'{"type":"key","code":"bad code","action":"down"}',
+		'{"type":"text","text":""}',
+		'{"type":"release","extra":true}',
+		'{"type":"ack","extra":true}',
+	])("closes invalid input %s without forwarding", async (raw) => {
+		const f = await fixture();
+		const { ws } = await connected(f.port, "/desktop-ws?viewOnly=0");
+		const closed = once(ws, "close");
+		ws.send(raw);
+		await closed;
+		expect(f.sessions[0].input).not.toHaveBeenCalled();
+		expect(f.sessions[0].close).toHaveBeenCalledTimes(1);
+	});
+	it("rejects binary and oversized inputs at the 16KB boundary", async () => {
+		expect(DESKTOP_LIMITS.input).toBe(16 * 1024);
+		const f = await fixture();
+		for (const raw of [
+			Buffer.from(JSON.stringify(inputs[0])),
+			JSON.stringify({ type: "text", text: "a".repeat(DESKTOP_LIMITS.input) }),
+		]) {
+			const { ws } = await connected(f.port, "/desktop-ws?viewOnly=0");
+			const closed = once(ws, "close");
+			ws.send(raw);
+			await closed;
+			expect(f.sessions.at(-1)!.input).not.toHaveBeenCalled();
+			expect(f.sessions.at(-1)!.close).toHaveBeenCalledTimes(1);
+		}
+	});
+	it("cleans native capture exactly once after disconnect and ignores late callbacks", async () => {
+		const f = await fixture();
+		const { ws } = await connected(f.port);
+		const session = f.sessions[0];
+		const closed = once(ws, "close");
 		ws.close();
 		await closed;
-	});
-	it("limits connections, rejects oversized messages and releases capacity", async () => {
-		const f = await fixture();
-		const sockets: WebSocket[] = [];
-		for (let i = 0; i < DESKTOP_LIMITS.connections; i++) {
-			const ws = wsClient(f.port);
-			await once(ws, "open");
-			sockets.push(ws);
-		}
-		const extra = wsClient(f.port);
-		const response = once(extra, "unexpected-response");
-		expect((await response)[1].statusCode).toBe(429);
-		extra.terminate();
-		const closed = once(sockets[0], "close");
-		sockets[0].send(Buffer.alloc(DESKTOP_LIMITS.frame + 1));
-		await closed;
-		const replacement = wsClient(f.port);
-		await once(replacement, "open");
-		const stopped = once(replacement, "close");
+		await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+		session.options.onClose();
+		session.options.onError("late error");
+		session.options.onFrame(tinyImage);
 		f.desktop.close();
-		await stopped;
+		f.desktop.close();
+		expect(session.close).toHaveBeenCalledTimes(1);
 	});
-	it("rejects text and propagates VNC EOF", async () => {
+	it("sends native errors as JSON then closes with 1011", async () => {
 		const f = await fixture();
-		const connection = once(f.tcp, "connection");
-		const ws = wsClient(f.port);
-		await once(ws, "open");
-		const [peer] = await connection;
+		const { ws, messages } = await connected(f.port);
 		const closed = once(ws, "close");
-		peer.end();
+		f.sessions[0].options.onError("Capture failed");
+		expect((await closed)[0]).toBe(1011);
+		expect(
+			messages.filter((message) => !message.binary).map((message) => JSON.parse(message.data.toString())),
+		).toContainEqual(expect.objectContaining({ type: "error" }));
+		expect(f.sessions[0].close).toHaveBeenCalledTimes(1);
+	});
+	it("closes the socket when native capture ends", async () => {
+		const f = await fixture();
+		const { ws } = await connected(f.port);
+		const closed = once(ws, "close");
+		f.sessions[0].options.onClose();
 		await closed;
-		const ws2 = wsClient(f.port);
-		await once(ws2, "open");
-		const closed2 = once(ws2, "close");
-		ws2.send("text");
-		await closed2;
+		expect(f.sessions[0].close).toHaveBeenCalledTimes(1);
+	});
+	it("limits connections to four, frees capacity and closes all captures on disable", async () => {
+		expect(DESKTOP_LIMITS.connections).toBe(4);
+		const f = await fixture({ env: {} });
+		await f.post("enable", { enabled: true });
+		const clients = [];
+		for (let i = 0; i < DESKTOP_LIMITS.connections; i++) clients.push(await connected(f.port));
+		await rejected(f.port, 429);
+		const closed = once(clients[0].ws, "close");
+		clients[0].ws.close();
+		await closed;
+		await vi.waitFor(() => expect(f.sessions[0].close).toHaveBeenCalledTimes(1));
+		const replacement = await connected(f.port);
+		const stopped = [...clients.slice(1), replacement].map(({ ws }) => once(ws, "close"));
+		expect((await f.post("enable", { enabled: false })).status).toBe(200);
+		await Promise.all(stopped);
+		for (const session of f.sessions) expect(session.close).toHaveBeenCalledTimes(1);
+		await rejected(f.port, 503);
+	});
+	it("bounds frames and drops frames while a prior send is pending", async () => {
+		expect(DESKTOP_LIMITS.frame).toBe(4 * 1024 * 1024);
+		expect(DESKTOP_LIMITS.queue).toBe(4 * 1024 * 1024);
+		const f = await fixture();
+		const { ws } = await connected(f.port);
+		const send = WebSocket.prototype.send;
+		const delivered: Buffer[] = [];
+		let finish: ((error?: Error) => void) | undefined;
+		vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
+			this: WebSocket,
+			data: any,
+			options: any,
+			callback?: any,
+		) {
+			if (options?.binary === true) {
+				delivered.push(Buffer.from(data));
+				finish = callback;
+				return;
+			}
+			return send.call(this, data, options, callback);
+		});
+		const session = f.sessions[0];
+		session.options.onFrame(tinyImage);
+		session.options.onFrame(Buffer.from("dropped"));
+		expect(delivered).toEqual([tinyImage]);
+		expect(finish).toBeTypeOf("function");
+		finish!();
+		session.options.onFrame(tinyImage);
+		expect(delivered).toHaveLength(1);
+		// ACKs are allowed in read-only sessions but never reach the native input API.
+		ws.send(JSON.stringify({ type: "ack" }));
+		await vi.waitFor(() => {
+			session.options.onFrame(tinyImage);
+			expect(delivered).toHaveLength(2);
+		});
+		expect(delivered).toHaveLength(2);
+		expect(session.input).not.toHaveBeenCalled();
+		finish!();
+		const closed = once(ws, "close");
+		session.options.onFrame(Buffer.alloc(DESKTOP_LIMITS.frame + 1));
+		await closed;
+		expect(delivered).toHaveLength(2);
+		expect(session.close).toHaveBeenCalledTimes(1);
+	});
+	it("drops frames when the WebSocket output queue is full and resumes after draining", async () => {
+		const f = await fixture();
+		const { messages } = await connected(f.port);
+		const buffered = vi.spyOn(WebSocket.prototype, "bufferedAmount", "get").mockReturnValue(DESKTOP_LIMITS.queue);
+		f.sessions[0].options.onFrame(tinyImage);
+		buffered.mockRestore();
+		f.sessions[0].options.onFrame(tinyImage);
+		await vi.waitFor(() => expect(messages.filter((message) => message.binary)).toHaveLength(1));
+		expect(messages.find((message) => message.binary)!.data).toEqual(tinyImage);
 	});
 	it("does not consume unrelated upgrade paths", async () => {
 		const f = await fixture();
@@ -257,41 +406,52 @@ describe("device desktop local bridge", () => {
 		} as any;
 		expect(f.desktop.handleUpgrade({ url: "/other" } as any, socket, Buffer.alloc(0))).toBe(false);
 	});
-	it("serves actual local noVNC modules with confined paths and compatible page URLs", async () => {
-		const f = await fixture();
-		for (const path of ["core/rfb.js", "core/websock.js", "vendor/pako/lib/zlib/inflate.js"]) {
-			expect(resolveDesktopAsset(path)).toBeTruthy();
-			const response = await fetch(f.url + "/api/device-desktop/novnc/" + path, { headers });
-			expect(response.status).toBe(200);
-			expect(response.headers.get("content-type")).toContain("javascript");
-			expect((await response.text()).length).toBeGreaterThan(10);
-		}
-		for (const path of [
-			"core/../../package.json",
-			"package.json",
-			"core/%2e%2e/package.json",
-			"vendor/../../server/index.ts",
-		])
-			expect(resolveDesktopAsset(path)).toBeUndefined();
-		const response = await fetch(f.url + "/desktop", { headers });
-		const html = await response.text();
-		expect(response.headers.get("content-security-policy")).toContain("script-src 'self' 'unsafe-inline'");
-		expect(html).toContain("new URL(path, document.baseURI)");
-		expect(html).toContain("Client view only is not an access permission");
-		expect(html).not.toContain("https://");
-		expect(html).not.toContain("innerHTML");
-	});
-	it("refuses asset symlinks escaping core/vendor", () => {
-		const root = mkdtempSync(join(tmpdir(), "desktop-assets-"));
-		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
-		mkdirSync(join(root, "core"));
-		writeFileSync(join(root, "outside.js"), "secret");
-		try {
-			symlinkSync(join(root, "outside.js"), join(root, "core", "escape.js"));
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "EPERM") return;
-			throw error;
-		}
-		expect(resolveDesktopAsset("core/escape.js", root)).toBeUndefined();
-	});
+	it.skipIf(!CHROME_PATH)(
+		"decodes native frames onto the canvas through a nested proxy path",
+		async () => {
+			const f = await fixture();
+			const browser = await chromium.launch({
+				executablePath: CHROME_PATH,
+				headless: true,
+				timeout: 5000,
+				args: ["--no-sandbox"],
+			});
+			cleanups.push(() => browser.close());
+			const page = await browser.newPage({ extraHTTPHeaders: headers, viewport: { width: 390, height: 740 } });
+			const errors: string[] = [];
+			const requests: string[] = [];
+			page.on("pageerror", (error) => errors.push(error.message));
+			page.on("websocket", (socket) => requests.push(socket.url()));
+			page.on("response", (response) => {
+				if (response.status() >= 400) errors.push(response.url() + ":" + response.status());
+			});
+			await page.goto(f.url + "/nested/desktop", { timeout: 5000 });
+			expect(await page.locator("#viewonly").isChecked()).toBe(true);
+			await page.locator("#connect").click();
+			await vi.waitFor(() => expect(f.sessions).toHaveLength(1));
+			f.sessions[0].options.onFrame(tinyImage);
+			await page.waitForFunction(
+				() => {
+					const canvas = document.querySelector<HTMLCanvasElement>("#canvas");
+					return (
+						canvas?.width === 1 && canvas.height === 1 && canvas.getContext("2d")!.getImageData(0, 0, 1, 1).data[3] > 0
+					);
+				},
+				undefined,
+				{ timeout: 5000 },
+			);
+			if (process.env.PI_DEVICE_DESKTOP_SCREENSHOT) {
+				mkdirSync("artifacts/device-center", { recursive: true });
+				await page.screenshot({ path: "artifacts/device-center/desktop-native.png", fullPage: true });
+			}
+			expect(requests[0]).toContain("/nested/desktop-ws");
+			expect(f.sessions[0].options.readOnly).toBe(true);
+			expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+			await page.locator("#disconnect").click();
+			await vi.waitFor(() => expect(f.sessions[0].close).toHaveBeenCalledTimes(1));
+			expect(await page.locator("#connect").isEnabled()).toBe(true);
+			expect(errors).toEqual([]);
+		},
+		15_000,
+	);
 });

@@ -1,0 +1,229 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import express from "express";
+import { chromium } from "playwright-core";
+import { CHROME_PATH } from "../lib/chrome.mjs";
+import http, { type Server } from "node:http";
+import { once } from "node:events";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { WebSocket } from "ws";
+import { createDeviceRelay } from "../../server/device-center/relay.js";
+import { createDeviceConnector } from "../../server/device-center/connector.js";
+import { createDeviceDesktop } from "../../server/device-center/desktop.js";
+
+type Native = NonNullable<Parameters<typeof createDeviceDesktop>[0]["native"]>;
+type CaptureOptions = Parameters<Native["start"]>[0];
+const cleanups: (() => void | Promise<void>)[] = [];
+afterEach(async () => {
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+async function listen(server: Server) {
+	server.listen(0, "127.0.0.1");
+	await once(server, "listening");
+	cleanups.push(() => {
+		server.closeAllConnections();
+		server.close();
+	});
+	return (server.address() as { port: number }).port;
+}
+async function request(port: number, host: string, path: string, headers: Record<string, string> = {}, method = "GET") {
+	return new Promise<{ status: number; headers: http.IncomingHttpHeaders; body: string }>((resolve, reject) => {
+		const req = http.request({ host: "127.0.0.1", port, path, method, headers: { host, ...headers } }, (res) => {
+			const chunks: Buffer[] = [];
+			res.on("data", (chunk) => chunks.push(chunk));
+			res.on("end", () =>
+				resolve({ status: res.statusCode!, headers: res.headers, body: Buffer.concat(chunks).toString() }),
+			);
+		});
+		req.on("error", reject);
+		req.end();
+	});
+}
+async function fixture() {
+	const dataDir = mkdtempSync(join(tmpdir(), "desktop-relay-"));
+	cleanups.push(() => rmSync(dataDir, { recursive: true, force: true }));
+	const sessions: { options: CaptureOptions; input: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> }[] = [];
+	const authorized = vi.fn((req: http.IncomingMessage) => req.headers.authorization === "Bearer local-secret");
+	const app = express();
+	const desktop = createDeviceDesktop({
+		app,
+		dataDir,
+		env: { PI_DEVICE_DESKTOP: "1" },
+		authorize: authorized,
+		native: {
+			status: () => ({ supported: true, backend: "fake-relay" }),
+			start: (options) => {
+				const session = { options, input: vi.fn(), close: vi.fn() };
+				sessions.push(session);
+				return session;
+			},
+		},
+	});
+	const local = http.createServer(app);
+	local.on("upgrade", (req, socket, head) => {
+		if (!desktop.handleUpgrade(req, socket, head)) socket.end("HTTP/1.1 404 Not Found\r\n\r\n");
+	});
+	const localPort = await listen(local);
+	cleanups.push(() => desktop.close());
+	let relay: ReturnType<typeof createDeviceRelay>;
+	const hub = http.createServer((req, res) => {
+		if (relay.handleRequest(req, res)) return;
+		if (req.url === "/api/devices/dev1/open") return void relay.handleOpen(req, res, "dev1");
+		res.writeHead(404).end();
+	});
+	const port = await listen(hub);
+	const publicUrl = `http://127.0.0.1:${port}`;
+	relay = createDeviceRelay({
+		server: hub,
+		publicUrl,
+		deviceDomain: `devices.localhost:${port}`,
+		authenticateDevice: (id, key) => id === "dev1" && key === "credential",
+		getAccount: () => ({ id: "account" }),
+		ownsDevice: (account, id) => account === "account" && id === "dev1",
+	});
+	cleanups.push(() => relay.close());
+	const connector = createDeviceConnector({
+		hubUrl: publicUrl,
+		deviceId: "dev1",
+		credential: "credential",
+		localOrigin: `http://127.0.0.1:${localPort}`,
+		localAuthToken: "local-secret",
+	});
+	cleanups.push(() => connector.close());
+	await vi.waitFor(() => expect(relay.isOnline("dev1")).toBe(true));
+	const ticket = await request(port, `127.0.0.1:${port}`, "/api/devices/dev1/open", { origin: publicUrl }, "POST");
+	expect(ticket.status).toBe(200);
+	const ticketUrl = new URL(JSON.parse(ticket.body).url);
+	const host = `dev1.devices.localhost:${port}`;
+	const origin = `http://${host}`;
+	const opened = await request(port, host, ticketUrl.pathname + ticketUrl.search);
+	expect(opened.status).toBe(302);
+	const cookie = opened.headers["set-cookie"]![0].split(";")[0];
+	function client(viewOnly: 0 | 1) {
+		const ws = new WebSocket(`ws://127.0.0.1:${port}/desktop-ws?viewOnly=${viewOnly}`, {
+			headers: { host, cookie, origin, authorization: "Bearer browser-credential" },
+		});
+		const messages: { binary: boolean; data: Buffer }[] = [];
+		ws.on("message", (data, binary) => messages.push({ binary, data: Buffer.from(data as Buffer) }));
+		ws.on("error", () => {});
+		cleanups.push(() => ws.terminate());
+		return { ws, messages };
+	}
+	return { port, host, origin, cookie, localPort, sessions, authorized, client };
+}
+// Opaque synthetic JPEG bytes: this suite verifies exact transport; canvas decoding is tested separately.
+const jpeg = Buffer.alloc(8192, 0xab);
+jpeg.writeUInt16BE(0xffd8, 0);
+jpeg.writeUInt16BE(0xffd9, jpeg.length - 2);
+
+describe("native desktop through device relay and connector", () => {
+	it.skipIf(!CHROME_PATH)(
+		"keeps native control connected when browser pointer movement has button=-1",
+		async () => {
+			const f = await fixture();
+			const browser = await chromium.launch({
+				executablePath: CHROME_PATH,
+				headless: true,
+				timeout: 5000,
+				args: ["--no-sandbox"],
+			});
+			cleanups.push(() => browser.close());
+			const page = await browser.newPage({ extraHTTPHeaders: { authorization: "Bearer local-secret" } });
+			await page.goto(`http://127.0.0.1:${f.localPort}/desktop`);
+			expect(await page.locator("#text").getAttribute("maxlength")).toBe("2048");
+			await page.locator("#viewonly").uncheck();
+			await page.locator("#connect").click();
+			await vi.waitFor(() => expect(f.sessions).toHaveLength(1));
+			const session = f.sessions[0];
+			expect(session.options.readOnly).toBe(false);
+			const image = await page.evaluate(() => {
+				const canvas = document.createElement("canvas");
+				canvas.width = canvas.height = 32;
+				const context = canvas.getContext("2d")!;
+				context.fillStyle = "red";
+				context.fillRect(0, 0, 32, 32);
+				return canvas.toDataURL("image/jpeg").split(",")[1];
+			});
+			session.options.onFrame(Buffer.from(image, "base64"));
+			await page.waitForFunction(() => document.querySelector<HTMLCanvasElement>("#canvas")?.width === 32);
+			const box = await page.locator("#canvas").boundingBox();
+			expect(box).not.toBeNull();
+			await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+			await vi.waitFor(() =>
+				expect(session.input).toHaveBeenCalledWith(expect.objectContaining({ type: "pointer", action: "move" })),
+			);
+			expect(session.input.mock.calls.find(([event]) => event.type === "pointer")![0]).not.toHaveProperty("button", -1);
+			expect(session.close).not.toHaveBeenCalled();
+			await page.locator("#disconnect").click();
+			await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+		},
+		15_000,
+	);
+	it("rewrites local authorization and transports binary frames and read-only ACKs through the full tunnel", async () => {
+		const f = await fixture();
+		const status = await request(f.port, f.host, "/api/device-desktop/status", { cookie: f.cookie });
+		expect(status.status).toBe(200);
+		expect(JSON.parse(status.body)).toMatchObject({
+			available: true,
+			backend: "fake-relay",
+			readOnlyEnforcement: "server",
+		});
+		const { ws, messages } = f.client(1);
+		await once(ws, "open");
+		await vi.waitFor(() => expect(f.sessions).toHaveLength(1));
+		const session = f.sessions[0];
+		expect(session.options.readOnly).toBe(true);
+		const localRequest = f.authorized.mock.calls.at(-1)![0];
+		expect(localRequest.headers).toMatchObject({
+			host: `127.0.0.1:${f.localPort}`,
+			origin: `http://127.0.0.1:${f.localPort}`,
+			authorization: "Bearer local-secret",
+		});
+		ws.send(JSON.stringify({ type: "text", text: "must never reach desktop" }));
+		ws.send(JSON.stringify({ type: "release" }));
+		session.options.onFrame(jpeg);
+		await vi.waitFor(() => expect(messages.filter((message) => message.binary)).toHaveLength(1));
+		expect(messages.find((message) => message.binary)!.data).toEqual(jpeg);
+		expect(
+			messages.filter((message) => !message.binary).map((message) => JSON.parse(message.data.toString())),
+		).toContainEqual({ type: "ready" });
+		session.options.onFrame(Buffer.from("must drop until ACK"));
+		ws.send(JSON.stringify({ type: "ack" }));
+		await vi.waitFor(() => {
+			session.options.onFrame(jpeg);
+			expect(messages.filter((message) => message.binary)).toHaveLength(2);
+		});
+		expect(messages.filter((message) => message.binary).map((message) => message.data)).toEqual([jpeg, jpeg]);
+		expect(session.input).not.toHaveBeenCalled();
+		const closed = once(ws, "close");
+		ws.close();
+		await closed;
+		await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+	});
+	it("preserves explicit control permission, forwards inputs and cleans capture when the remote socket closes", async () => {
+		const f = await fixture();
+		const { ws, messages } = f.client(0);
+		await once(ws, "open");
+		await vi.waitFor(() => expect(f.sessions).toHaveLength(1));
+		const session = f.sessions[0];
+		expect(session.options.readOnly).toBe(false);
+		const inputs = [
+			{ type: "pointer", x: 0.25, y: 0.75, button: 0, action: "down" },
+			{ type: "wheel", deltaY: 120 },
+			{ type: "key", code: "KeyA", action: "up" },
+			{ type: "text", text: "remote 世界" },
+			{ type: "release" },
+		];
+		for (const input of inputs) ws.send(JSON.stringify(input));
+		await vi.waitFor(() => expect(session.input.mock.calls.map(([event]) => event)).toEqual(inputs));
+		session.options.onFrame(jpeg);
+		await vi.waitFor(() => expect(messages.some((message) => message.binary && message.data.equals(jpeg))).toBe(true));
+		ws.send(JSON.stringify({ type: "ack" }));
+		const closed = once(ws, "close");
+		ws.close();
+		await closed;
+		await vi.waitFor(() => expect(session.close).toHaveBeenCalledTimes(1));
+		expect(session.input.mock.calls.map(([event]) => event)).toEqual(inputs);
+	});
+});

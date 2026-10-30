@@ -97,7 +97,18 @@ AI 可调用 `device_collab` 列 Bot、列群。获得工具授权的 Bot 执行
 
 ## 浏览器远程桌面
 
-设备卡提供独立「远程桌面」入口，复用账号归属校验、一次性票据和设备域。被控电脑须先安装、配置 VNC 服务，并在本机显式设置 `PI_DEVICE_DESKTOP=1`；画面和键鼠通过独立 WebSocket 传输，不进入聊天快照或模型上下文。具体配置、平台边界和只读说明见 `docs/device-desktop.md`。
+设备卡提供独立「远程桌面」入口，复用账号归属校验、一次性票据和设备访问链路。实现参考 [krd](https://github.com/zzjcool/krd) 的原生捕获与键鼠注入方式，画面和输入复用既有 WebSocket 中继，不进入聊天快照或模型上下文。无需安装 noVNC 或 VNC 服务，也无需额外开放桌面端口。
+
+远程桌面默认关闭；本机启用偏好持久化到 `<dataDir>/desktop-settings.json`，写入成功后才更新运行态。设置 `PI_DEVICE_DESKTOP=1` 会强制启用，本机关闭偏好不能覆盖该环境变量。只读权限由后端强制执行，只读连接的键鼠输入不会注入被控电脑。
+
+| 平台          | 捕获与输入                                                                      | 运行条件                                                   |
+| ------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| Windows       | GDI 捕获 + SendInput 键鼠注入                                                   | 可访问的本机图形桌面会话                                   |
+| macOS         | Swift 原生助手：ScreenCaptureKit `SCScreenshotManager` 捕获 + CoreGraphics 输入 | macOS 14+、Swift CLI；屏幕录制权限，控制时还需辅助功能权限 |
+| Linux X11     | ffmpeg 捕获 + xdotool 键鼠注入                                                  | 可访问的 X11 会话与 ffmpeg；仅查看时可不安装 xdotool       |
+| Linux Wayland | 暂不支持                                                                        | 后续需接入 Desktop Portal 的屏幕共享与远程控制能力         |
+
+旧 `PI_DEVICE_VNC_*` 环境变量已退役，不再用于地址、端口、密码、路径或浏览器组件配置。
 
 ## 验证与边界
 

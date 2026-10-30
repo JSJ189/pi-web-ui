@@ -1,26 +1,23 @@
 import express, { type Express } from "express";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { createConnection } from "node:net";
-import { realpathSync, statSync } from "node:fs";
-import { createRequire } from "node:module";
-import { dirname, resolve, relative, isAbsolute, extname } from "node:path";
 import { WebSocket, WebSocketServer } from "ws";
-import { getPkgRoot } from "../pkg-info.js";
 import { desktopPage } from "./desktop-page.js";
-import { createDesktopSetup, probeDesktopVnc, type DesktopInstaller } from "./desktop-setup.js";
+import { createDesktopSetup } from "./desktop-setup.js";
+import { nativeDesktopStatus, startNativeDesktop, type NativeDesktopInput } from "./desktop-native.js";
+import { linuxDesktopStatus, startLinuxDesktop } from "./desktop-linux.js";
 
 export const DESKTOP_LIMITS = Object.freeze({
-	frame: 1024 * 1024,
+	frame: 4 * 1024 * 1024,
+	input: 16 * 1024,
 	queue: 4 * 1024 * 1024,
 	connections: 4,
-	connectMs: 10_000,
+	connectMs: 60_000,
 	idleMs: 30 * 60_000,
 });
-const ASSETS = "/api/device-desktop/novnc/";
 const loopback = (host: string) => ["127.0.0.1", "::1", "[::1]", "localhost"].includes(host);
 
-/** Independent local authorization. Connector must rewrite Host/Origin and inject local credentials. */
+/** Independent local authorization. Connector rewrites Host/Origin and injects local credentials. */
 export function desktopLocalRequest(req: IncomingMessage): boolean {
 	if (!loopback(req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? "")) return false;
 	try {
@@ -43,74 +40,95 @@ export function desktopLocalRequest(req: IncomingMessage): boolean {
 	}
 }
 
-/** Resolve only published core/vendor files, including every realpath component. */
-export function resolveDesktopAsset(path: string, root = desktopAssetRoot()): string | undefined {
-	if (
-		!root ||
-		!/^(core|vendor)\/[a-zA-Z0-9_./-]+\.(js|wasm)$/.test(path) ||
-		path.split("/").some((p) => p === "." || p === "..")
-	)
-		return;
-	try {
-		const canonicalRoot = realpathSync(root);
-		const allowed = realpathSync(resolve(canonicalRoot, path.split("/")[0]));
-		const rootRelative = relative(canonicalRoot, allowed);
-		if (!rootRelative || rootRelative.startsWith("..") || isAbsolute(rootRelative)) return;
-		const file = realpathSync(resolve(root, path));
-		const rel = relative(allowed, file);
-		if (!rel || rel.startsWith("..") || isAbsolute(rel) || !statSync(file).isFile()) return;
-		return file;
-	} catch {
-		return;
-	}
-}
-/** Both core/rfb.js and lib/rfb.js are used as package entrypoints in published versions. */
-export function desktopAssetRoot(packageRoot = getPkgRoot(), resolveEntry?: () => string): string | undefined {
-	try {
-		const require = createRequire(resolve(packageRoot, "package.json"));
-		const entry = realpathSync(resolveEntry ? resolveEntry() : require.resolve("@novnc/novnc"));
-		const root = realpathSync(resolve(dirname(entry), ".."));
-		// Verify the package structure rather than relying on its entrypoint directory name.
-		if (!statSync(resolve(root, "core")).isDirectory() || !resolveDesktopAsset("core/rfb.js", root)) return;
-		return root;
-	} catch {
-		return;
-	}
-}
-
+type CaptureOptions = {
+	onFrame: (jpeg: Buffer) => void;
+	onError: (message: string) => void;
+	onClose: () => void;
+	readOnly?: boolean;
+};
+type Capture = { input: (event: NativeDesktopInput) => void; close: () => void };
 export interface DeviceDesktopOptions {
 	app: Express;
-	/** Required even when the parent HTTP app has another authentication middleware. */
 	authorize: (req: IncomingMessage) => boolean;
 	env?: NodeJS.ProcessEnv;
-	/** Application data directory; runtime packages live in its desktop-runtime subdirectory. */
 	dataDir?: string;
-	/** Test seam; production always uses the fixed noVNC npm installer. */
-	installer?: DesktopInstaller;
+	/** Dependency injection keeps route tests independent of the machine's physical desktop. */
+	native?: {
+		status: () => { supported: boolean; backend: string; reason?: string };
+		start: (options: CaptureOptions) => Capture;
+	};
 }
 
-/** Register before SPA fallback; call handleUpgrade before the parent's existing WS dispatcher. */
-export function createDeviceDesktop({ app, authorize, env = process.env, dataDir, installer }: DeviceDesktopOptions) {
-	const setup = createDesktopSetup({ dataDir, environmentEnabled: env.PI_DEVICE_DESKTOP === "1", installer });
-	const rawPort = env.PI_DEVICE_VNC_PORT ?? "5900";
-	const port = /^\d{1,5}$/.test(rawPort) ? Number(rawPort) : 0;
-	const host = env.PI_DEVICE_VNC_HOST ?? "127.0.0.1";
-	const configured = port >= 1 && port <= 65535 && ["127.0.0.1", "::1"].includes(host);
-	const assetsRoot = () => desktopAssetRoot() ?? desktopAssetRoot(setup.runtimeDir);
-	const status = () => ({
-		os: process.platform,
-		enabled: setup.enabled,
-		environmentEnabled: env.PI_DEVICE_DESKTOP === "1",
-		endpointConfigured: configured,
-		assetsAvailable: !!assetsRoot(),
-		// Availability of the bridge is not proof of a listening VNC service or a successful RFB login.
-		available: setup.enabled && configured && !!assetsRoot(),
-		readOnlyEnforcement: "vnc-server",
-		clientViewOnlyIsPermission: false,
-	});
+/** Validate the entire input at the trust boundary, before invoking any native API. */
+export function parseDesktopInput(value: unknown): NativeDesktopInput | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return;
+	const v = value as Record<string, unknown>;
+	const only = (...keys: string[]) => Object.keys(v).every((key) => keys.includes(key));
+	const finite = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n);
+	if (v.type === "release" && only("type")) return { type: "release" };
+	if (
+		v.type === "pointer" &&
+		only("type", "x", "y", "action", "button") &&
+		finite(v.x) &&
+		finite(v.y) &&
+		v.x >= 0 &&
+		v.x <= 1 &&
+		v.y >= 0 &&
+		v.y <= 1 &&
+		["move", "down", "up"].includes(String(v.action)) &&
+		(v.button === undefined || [0, 1, 2].includes(v.button as number))
+	) {
+		if (v.action !== "move" && v.button === undefined) return;
+		return v as NativeDesktopInput;
+	}
+	if (v.type === "wheel" && only("type", "deltaY") && finite(v.deltaY) && Math.abs(v.deltaY) <= 10000)
+		return v as NativeDesktopInput;
+	if (
+		v.type === "key" &&
+		only("type", "code", "action") &&
+		typeof v.code === "string" &&
+		/^[A-Za-z][A-Za-z0-9]{0,39}$/.test(v.code) &&
+		["down", "up"].includes(String(v.action))
+	)
+		return v as NativeDesktopInput;
+	if (
+		v.type === "text" &&
+		only("type", "text") &&
+		typeof v.text === "string" &&
+		v.text.length > 0 &&
+		v.text.length <= 2048 &&
+		!v.text.includes("\0")
+	)
+		return v as NativeDesktopInput;
+}
+
+export function createDeviceDesktop({ app, authorize, env = process.env, dataDir, native }: DeviceDesktopOptions) {
+	const setup = createDesktopSetup({ dataDir, environmentEnabled: env.PI_DEVICE_DESKTOP === "1" });
+	const backend =
+		native ??
+		(process.platform === "linux"
+			? { status: linuxDesktopStatus, start: startLinuxDesktop }
+			: { status: nativeDesktopStatus, start: startNativeDesktop });
+	const installation = {
+		state: "not-required",
+		log: "Native desktop capture does not require browser component installation.",
+	};
+	const status = () => {
+		const platform = backend.status();
+		return {
+			...platform,
+			os: process.platform,
+			enabled: setup.enabled,
+			environmentEnabled: env.PI_DEVICE_DESKTOP === "1",
+			available: setup.enabled && platform.supported,
+			readOnlyEnforcement: "server",
+			clientViewOnlyIsPermission: true,
+			installation,
+		};
+	};
 	let closed = false;
 	const bridges = new Set<() => void>();
-	const wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_LIMITS.frame, perMessageDeflate: false });
+	const wss = new WebSocketServer({ noServer: true, maxPayload: DESKTOP_LIMITS.input, perMessageDeflate: false });
 	const allowed = (req: IncomingMessage) => {
 		try {
 			return !closed && desktopLocalRequest(req) && authorize(req);
@@ -119,13 +137,7 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 		}
 	};
 	app.use((req, res, next) => {
-		if (
-			req.path !== "/desktop" &&
-			req.path !== "/api/device-desktop/status" &&
-			!req.path.startsWith("/api/device-desktop/setup/") &&
-			!req.path.startsWith(ASSETS)
-		)
-			return next();
+		if (req.path !== "/desktop" && !req.path.startsWith("/api/device-desktop/")) return next();
 		res.setHeader("Cache-Control", "no-store");
 		res.setHeader("X-Content-Type-Options", "nosniff");
 		res.setHeader("Referrer-Policy", "no-referrer");
@@ -145,27 +157,14 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 		if (req.path === "/desktop") {
 			res.setHeader(
 				"Content-Security-Policy",
-				"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; worker-src 'self' blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
+				"default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-ancestors 'self'; base-uri 'none'; form-action 'none'",
 			);
 			res.type("html").send(desktopPage());
 			return;
 		}
-		if (!setup.enabled) {
-			res.status(503).end("Desktop disabled");
-			return;
-		}
-		const file = resolveDesktopAsset(req.path.slice(ASSETS.length), assetsRoot());
-		if (!file) {
-			res.status(404).end();
-			return;
-		}
-		res.type(extname(file) === ".wasm" ? "application/wasm" : "text/javascript").sendFile(file);
+		res.status(404).end();
 	});
-	app.get("/api/device-desktop/setup/status", async (_req, res) => {
-		const reachable = configured ? await probeDesktopVnc(host, port) : false;
-		res.json({ ...status(), installation: setup.installation, vncReachable: reachable });
-	});
-	// Mutations require an explicit exact local Origin as well as the shared authorization gate.
+	app.get("/api/device-desktop/setup/status", (_req, res) => res.json(status()));
 	const setupGuard: express.RequestHandler = (req, res, next) => {
 		if (!allowed(req) || !req.headers.origin) {
 			res.status(403).end("Desktop authorization and Origin required");
@@ -173,14 +172,7 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 		}
 		next();
 	};
-	app.post("/api/device-desktop/setup/install", setupGuard, (req, res) => {
-		try {
-			setup.install();
-			res.status(202).json({ installation: setup.installation });
-		} catch {
-			res.status(500).json({ error: "Could not start browser component installation" });
-		}
-	});
+	app.post("/api/device-desktop/setup/install", setupGuard, (_req, res) => res.json({ installation }));
 	app.post("/api/device-desktop/setup/enable", setupGuard, express.json({ limit: 256 }), (req, res) => {
 		if (!req.body || typeof req.body.enabled !== "boolean" || Object.keys(req.body).length !== 1) {
 			res.status(400).json({ error: "Expected only enabled boolean" });
@@ -194,24 +186,48 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 			res.status(500).json({ error: "Could not save desktop settings" });
 		}
 	});
-	function bridge(ws: WebSocket) {
-		const tcp = createConnection({ host, port });
+	function bridge(ws: WebSocket, readOnly: boolean) {
 		let ended = false;
-		let connected = false;
-		let lastActivity = Date.now();
+		let capture: Capture | undefined;
 		let alive = true;
+		let lastActivity = Date.now();
 		let queued = 0;
+		let sending = false;
+		let awaitingAck = false;
+		let started = false;
+		let failing = false;
+		let closeTimer: ReturnType<typeof setTimeout> | undefined;
+		let captureClosed = false;
+		const stopCapture = () => {
+			if (!capture || captureClosed) return;
+			captureClosed = true;
+			capture.close();
+		};
 		const cleanup = () => {
 			if (ended) return;
 			ended = true;
 			clearTimeout(connectTimer);
 			clearInterval(heartbeat);
+			clearTimeout(closeTimer);
 			bridges.delete(cleanup);
-			tcp.destroy();
+			stopCapture();
 			ws.terminate();
 		};
-		bridges.add(cleanup);
-		const connectTimer = setTimeout(cleanup, DESKTOP_LIMITS.connectMs);
+		const fail = (message: string) => {
+			if (ended || failing) return;
+			failing = true;
+			stopCapture();
+			if (ws.readyState === WebSocket.OPEN) {
+				ws.send(JSON.stringify({ type: "error", message: message.slice(0, 2048) }));
+				ws.close(1011, "Desktop capture failed");
+				closeTimer = setTimeout(cleanup, 2000);
+				closeTimer.unref();
+			} else cleanup();
+		};
+		const connectTimer = setTimeout(
+			() => fail("Desktop capture timed out. Check screen capture permissions and the active graphical session."),
+			DESKTOP_LIMITS.connectMs,
+		);
 		connectTimer.unref();
 		const heartbeat = setInterval(() => {
 			if (!alive || Date.now() - lastActivity > DESKTOP_LIMITS.idleMs) return cleanup();
@@ -219,65 +235,88 @@ export function createDeviceDesktop({ app, authorize, env = process.env, dataDir
 			if (ws.readyState === WebSocket.OPEN) ws.ping();
 		}, 30_000);
 		heartbeat.unref();
-		ws.pause();
-		tcp.once("connect", () => {
-			connected = true;
-			clearTimeout(connectTimer);
-			if (!ended) ws.resume();
-		});
-		tcp.on("data", (data: Buffer) => {
-			if (ended) return;
-			lastActivity = Date.now();
-			if (queued + data.length > DESKTOP_LIMITS.queue || ws.bufferedAmount + data.length > DESKTOP_LIMITS.queue)
-				return cleanup();
-			queued += data.length;
-			// Bound individual raw RFB messages regardless of TCP chunk size.
-			for (let offset = 0; offset < data.length; offset += 64 * 1024) {
-				const chunk = data.subarray(offset, offset + 64 * 1024);
-				ws.send(chunk, { binary: true }, (error) => {
-					queued -= chunk.length;
-					if (error) return cleanup();
-					if (!ended && queued < 256 * 1024) tcp.resume();
-				});
-			}
-			if (queued >= 512 * 1024) tcp.pause();
-		});
-		ws.on("message", (raw, binary) => {
-			if (ended) return;
-			if (!binary || !connected) return cleanup();
-			const data = Buffer.isBuffer(raw) ? raw : Array.isArray(raw) ? Buffer.concat(raw) : Buffer.from(raw);
-			if (data.length + tcp.writableLength > DESKTOP_LIMITS.queue) return cleanup();
-			lastActivity = Date.now();
-			if (!tcp.write(data)) ws.pause();
-		});
-		tcp.on("drain", () => {
-			if (!ended && connected) ws.resume();
-		});
+		bridges.add(cleanup);
 		ws.on("pong", () => {
 			alive = true;
 		});
 		ws.on("close", cleanup);
 		ws.on("error", cleanup);
-		tcp.on("error", cleanup);
-		tcp.on("close", cleanup);
-		tcp.on("end", cleanup);
+		ws.on("message", (raw, binary) => {
+			if (ended) return;
+			if (binary) return cleanup();
+			let input: NativeDesktopInput | undefined;
+			try {
+				const value = JSON.parse(raw.toString());
+				if (value?.type === "ack" && Object.keys(value).length === 1) {
+					awaitingAck = false;
+					return;
+				}
+				input = parseDesktopInput(value);
+			} catch {
+				/* Invalid input closes this connection. */
+			}
+			if (!input) return cleanup();
+			lastActivity = Date.now();
+			if (!readOnly) {
+				try {
+					capture?.input(input);
+				} catch {
+					fail("Could not send desktop input.");
+				}
+			}
+		});
+		try {
+			capture = backend.start({
+				readOnly,
+				onFrame: (jpeg) => {
+					if (ended || failing || ws.readyState !== WebSocket.OPEN) return;
+					if (!jpeg.length || jpeg.length > DESKTOP_LIMITS.frame)
+						return fail("Desktop frame exceeds the capture size limit.");
+					if (!started) {
+						started = true;
+						clearTimeout(connectTimer);
+						ws.send(JSON.stringify({ type: "ready" }));
+					}
+					// Slow clients drop frames rather than building latency or an unbounded queue.
+					if (
+						sending ||
+						awaitingAck ||
+						queued + jpeg.length > DESKTOP_LIMITS.queue ||
+						ws.bufferedAmount + jpeg.length > DESKTOP_LIMITS.queue
+					)
+						return;
+					sending = true;
+					awaitingAck = true;
+					queued += jpeg.length;
+					ws.send(jpeg, { binary: true }, (error) => {
+						sending = false;
+						queued -= jpeg.length;
+						if (error) cleanup();
+					});
+				},
+				onError: fail,
+				onClose: () => fail("Desktop capture stopped. Check the active desktop session and system permissions."),
+			});
+			if (ended || failing) stopCapture();
+		} catch (error) {
+			fail(error instanceof Error ? error.message : "Could not start desktop capture.");
+		}
 	}
 	return {
 		handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): boolean {
-			let path: string;
+			let url: URL;
 			try {
-				path = new URL(req.url ?? "/", "http://local").pathname;
+				url = new URL(req.url ?? "/", "http://local");
 			} catch {
 				return false;
 			}
-			if (path !== "/desktop-ws") return false;
-			const reject = (code: number, reason: string) => {
+			if (url.pathname !== "/desktop-ws") return false;
+			const reject = (code: number, reason: string) =>
 				socket.end(`HTTP/1.1 ${code} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
-			};
 			if (!allowed(req)) reject(403, "Forbidden");
-			else if (!setup.enabled || !configured || !assetsRoot()) reject(503, "Unavailable");
+			else if (!setup.enabled || !backend.status().supported) reject(503, "Unavailable");
 			else if (bridges.size >= DESKTOP_LIMITS.connections) reject(429, "Too Many Requests");
-			else wss.handleUpgrade(req, socket, head, bridge);
+			else wss.handleUpgrade(req, socket, head, (ws) => bridge(ws, url.searchParams.get("viewOnly") !== "0"));
 			return true;
 		},
 		close() {

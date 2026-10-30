@@ -58,6 +58,16 @@
 | `PI_WEB_SUBAGENT_WAIT_CAP_SECONDS`           | 空（默认取看门狗 0.8×，约 16 分钟）                                                         | 子代理最长等待上限（秒）：把 `server/subagents.ts` 的等待看门狗 cap 从默认一条硬编码值换成自定义值，用于测试/CI 里把慢超时缩短到分钟级                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `PI_WEB_GIT_TIMEOUT_MS`                      | 45000                                                                                       | Git 操作（clone/fetch/pull 等）的进程级超时毫秒数：慢网络环境超时退出，避免 `git` 子进程永久挂住占用插件/更新任务（见 bin/pi-web-ui.mjs 的更新检查）                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 
+## 设备中心远程桌面
+
+| 变量                | 默认       | 作用                                                                                                                                      |
+| ------------------- | ---------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `PI_DEVICE_DESKTOP` | 空（关闭） | `1` 强制启用本机原生远程桌面；未设置时读取 `<dataDir>/desktop-settings.json` 的启用偏好，默认关闭。本机关闭偏好不能覆盖环境变量强制启用。 |
+
+远程桌面参考 [krd](https://github.com/zzjcool/krd) 的原生捕获与键鼠注入方式，画面和输入复用既有 WebSocket 中继，无需 noVNC、VNC 服务或额外桌面端口。Windows 使用 GDI + SendInput；macOS 使用 Swift 原生助手，通过 ScreenCaptureKit `SCScreenshotManager` 捕获、CoreGraphics 注入输入，需要 macOS 14+、Swift CLI 和屏幕录制权限，控制时还需辅助功能权限；Linux X11 使用 ffmpeg + xdotool，仅查看时可不安装 xdotool。Wayland 暂不支持，后续需接入 Desktop Portal。只读权限由后端强制执行。
+
+旧 `PI_DEVICE_VNC_*` 环境变量已退役，不再读取；无需配置 VNC 地址、端口、密码、路径或 noVNC 安装目录。详见 `docs/device-center.md` 的「浏览器远程桌面」。
+
 ## SSH 主机身份验证
 
 远程工作区与官方 SFTP 插件默认验证 `~/.ssh/known_hosts`；`PI_WEB_SSH_KNOWN_HOSTS` 可指定另一份 OpenSSH known_hosts 文件。未知、变更或被 `@revoked` 撤销的主机密钥在认证前拒绝，程序不会自动添加信任。支持普通/哈希主机记录、非默认端口与别名；当前不支持只依赖 `@cert-authority` 的主机证书信任，需要预配具体主机公钥。
