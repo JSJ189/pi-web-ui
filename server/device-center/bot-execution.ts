@@ -94,6 +94,11 @@ export function registerBotExecution(bot: LocalBot): {
 	};
 }
 
+/** A binding is removed only after the executor confirms its task has stopped. */
+export function isBotExecutionRegistered(clientId: string): boolean {
+	return bindings.has(clientId);
+}
+
 /** Unregistered private IDs fail closed, including after a server restart. */
 export function getBotExecution(clientId: string): BotExecutionCapability | undefined {
 	const binding = bindings.get(clientId);

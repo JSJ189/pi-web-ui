@@ -18,6 +18,7 @@ import { randomUUID } from "node:crypto";
 import { VERSION, getAgentDir, type AgentSession } from "@earendil-works/pi-coding-agent";
 import { ClientStateStore } from "./client-state.js";
 import { ClaimStore } from "./claim-store.js";
+import { isBotExecutionRegistered } from "./device-center/bot-execution.js";
 import { toServiceInfo, launchOrigin } from "./launch-origin.js";
 import { isPseudoClientId, isOrphanAdoptionExcludedClientId, checkPluginCwd } from "./client-id-utils.js";
 import { pickAdoptableOrphan, type OrphanCandidate } from "./orphan-manager.js";
@@ -1285,6 +1286,11 @@ export class AgentService {
 		if (detachedSinks?.has(send)) {
 			detachedSinks.delete(send);
 			if (detachedSinks.size === 0) this.pendingDetaches.delete(clientId);
+			if (clientId.startsWith("device-task-") && !isBotExecutionRegistered(clientId) && cs.sinkCount() === 0) {
+				this.clients.delete(clientId);
+				await cs.dispose();
+				return cs;
+			}
 		} else {
 			cs.attachSink(send);
 			// 又有浏览器连上：离线行状态作废（别的页面按在线行重推，去掉离线标记）。
@@ -1370,8 +1376,13 @@ export class AgentService {
 		if (cs) {
 			cs.detachSink(send);
 			if (cs.sinkCount() === 0) {
-				if (clientId.startsWith("canvas:") || clientId.startsWith("canvas-")) {
-					// Canvas 辅助连接一旦关闭，立即从客户端池回收并释放资源，绝不残留
+				if (
+					clientId.startsWith("canvas:") ||
+					clientId.startsWith("canvas-") ||
+					(clientId.startsWith("device-task-") && !isBotExecutionRegistered(clientId))
+				) {
+					// Bot registration is released only after the executor confirms stop.
+					// Keep uncertain/disconnected executions owned until that confirmation.
 					this.clients.delete(clientId);
 					void cs.dispose().catch(() => {});
 					return;

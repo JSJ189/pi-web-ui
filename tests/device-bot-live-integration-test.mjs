@@ -17,6 +17,7 @@ import WebSocket from "ws";
 const root = fileURLToPath(new URL("../", import.meta.url));
 const temp = await mkdtemp(join(tmpdir(), "pi-bot-live-"));
 const project = join(temp, "project");
+const coldProject = join(temp, "cold-project");
 const agent = join(temp, "agent");
 const data = join(temp, "data");
 const requests = [];
@@ -97,7 +98,7 @@ function stream(response, delta, reason) {
 	response.end("data: [DONE]\n\n");
 }
 try {
-	await Promise.all([mkdir(project), mkdir(agent), mkdir(data)]);
+	await Promise.all([mkdir(project), mkdir(coldProject), mkdir(agent), mkdir(data)]);
 	await writeFile(join(project, "probe.txt"), sentinel);
 	// A real disk Skill excluded by this Bot must not cause perpetual SDK reloads.
 	const excludedSkill = join(agent, "skills", "bot-live-excluded");
@@ -173,6 +174,13 @@ try {
 		observer,
 		`import WebSocket from ${JSON.stringify(new URL("../node_modules/ws/wrapper.mjs", import.meta.url).href)};\nconst send = WebSocket.prototype.send;\nWebSocket.prototype.send = function(data, ...args) { try { const p = JSON.parse(String(data)); if (["hello", "snapshot", "snapshot_delta", "error"].includes(p.type)) console.log("BOT_WIRE", JSON.stringify({ type:p.type, clientId:p.clientId ?? p.state?.clientId, conversationId:p.state?.conversationId, error:p.error ?? p.message })); } catch {} return send.call(this,data,...args); };`,
 	);
+	if (process.env.PI_BOT_LIVE_ERROR_STACKS === "1") {
+		await writeFile(
+			observer,
+			(await readFile(observer, "utf8")) +
+				`\nconst NativeError = globalThis.Error; NativeError.stackTraceLimit = 100; globalThis.Error = new Proxy(NativeError, { construct(target, args, newTarget) { const error = Reflect.construct(target, args, newTarget); if (String(args[0]).includes("Bot execution capability has been revoked")) process.stderr.write("BOT_REVOKED_STACK\\n" + error.stack + "\\n"); return error; } });\n`,
+		);
+	}
 	const localPort = await port();
 	const hubPort = await port();
 	const localOrigin = `http://127.0.0.1:${localPort}`;
@@ -188,6 +196,9 @@ try {
 		cwd: project,
 		env: {
 			...process.env,
+			...(process.env.PI_BOT_LIVE_ERROR_STACKS === "1"
+				? { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(observer).href}` }
+				: {}),
 			PI_WEB_PORT: String(localPort),
 			PI_WEB_HOST: "127.0.0.1",
 			PI_WEB_CWD: project,
@@ -202,7 +213,12 @@ try {
 		},
 		stdio: ["ignore", "pipe", "pipe"],
 	});
-	for (const pipe of [child.stdout, child.stderr]) pipe.on("data", (chunk) => (logs = (logs + chunk).slice(-24000)));
+	for (const pipe of [child.stdout, child.stderr]) {
+		pipe.on("data", (chunk) => {
+			logs += chunk;
+			if (process.env.PI_BOT_LIVE_ERROR_STACKS !== "1") logs = logs.slice(-24000);
+		});
+	}
 	await until(
 		async () =>
 			fetch(`${localOrigin}/api/health`)
@@ -350,6 +366,24 @@ try {
 	);
 	assert.equal(requests.length, beforeReject);
 	console.log("PASS disabled Bot rejection before model execution");
+	// Reuse the ordinary browser connection after all Bot executors released their
+	// capabilities. A cold project must construct its real SDK runtime independently.
+	async function ordinarySetCwd(path) {
+		const start = controlPackets.length;
+		control.send(JSON.stringify({ type: "set_cwd", path }));
+		await until(() => {
+			const packets = controlPackets.slice(start);
+			const error = packets.find((packet) => packet.type === "error");
+			assert.equal(error, undefined, `ordinary set_cwd ${path}: ${JSON.stringify(error)}; server=${logs}`);
+			return packets.some(
+				(packet) => ["snapshot", "snapshot_delta"].includes(packet.type) && packet.state.cwd === path,
+			);
+		}, `ordinary set_cwd ${path}`);
+		console.log(`PASS ordinary set_cwd ${path}`);
+	}
+	await ordinarySetCwd(coldProject);
+	await ordinarySetCwd(project);
+	assert.doesNotMatch(logs, /Unhandled Promise Rejection|Bot execution capability has been revoked/);
 	console.log("PASS device-bot-live-integration: real isolated Hub/device/SDK/model, no paid inference");
 } catch (error) {
 	console.error(

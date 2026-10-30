@@ -9852,6 +9852,9 @@ export class ClientSession {
 
 	/** index.ts 经 pluginMgr.onAgentToolsChanged 触发：把插件 AI 工具推入全部会话。 */
 	refreshPluginTools(): void {
+		// Bot tools are fixed by their execution capability, not the global plugin catalog.
+		// Completion revokes that capability before the executor's socket close arrives.
+		if (this.disposed || this.botExecution) return;
 		for (const conv of this.convs.values()) this.applyToolGating(conv.session, conv.agentPreset);
 	}
 
