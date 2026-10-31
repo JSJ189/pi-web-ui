@@ -659,6 +659,8 @@ export interface Conversation {
 	recentWakeSubagentIds?: string[];
 	/** 正在过户给其他会话（detach 阶段切走 active 时不触发销毁）。 */
 	transferring?: boolean;
+	/** Running bash calls belong to this object, including while it changes holders. */
+	bashKills?: Set<AbortController>;
 	runtime: AgentSessionRuntime;
 	session: AgentSession;
 	cwd: string;
@@ -970,20 +972,9 @@ export class ClientSession {
 	 *  considered stopped once its agent_end event arrives. If it doesn't
 	 *  (model stream stuck before the run even started), force-reset. */
 	private static readonly HARD_ABORT_SETTLE_MS = 8_000;
-	/** Live AbortControllers of running bash tool calls, bucketed per conversation
-	 *  (see {@link bashKillsOf}). Aborting one bucket kills only that conversation's
-	 *  command — the agent run and every other conversation keep going. */
-	private bashKills = new Map<string, Set<AbortController>>();
-
-	/** The bash-cancel bucket of one conversation, created on demand. */
-	private bashKillsOf(convId: string | undefined): Set<AbortController> {
-		const key = convId || this.activeId || "";
-		let set = this.bashKills.get(key);
-		if (!set) {
-			set = new Set<AbortController>();
-			this.bashKills.set(key, set);
-		}
-		return set;
+	/** Resolve only an explicit execution owner; never borrow the active conversation. */
+	private bashKillsOf(conv: Conversation): Set<AbortController> {
+		return (conv.bashKills ??= new Set<AbortController>());
 	}
 	/** Background-server tracking (port snapshots + 后台任务 panel state) —
 	 *  自包含模块，见 bg-servers.ts。列表按 CLIENT 存活，不随对话切换/结束消失。 */
@@ -9596,51 +9587,68 @@ export class ClientSession {
 				),
 			);
 		const composeBash = (base?: AnyToolDefinition): ToolDefinition => {
-			const convKills = this.bashKillsOf(ownerId);
-			let core: ToolDefinition;
-			if (base) {
-				// 扩展提供了同名 bash：以扩展定义为基底，保留其 schema/描述/guidelines，
-				// 同时挂载 abort_bash 信号中断支持与 head/tail 输出后处理。
-				core = {
-					...base,
-					execute: async (toolCallId, params, signal, onUpdate, ctx) => {
-						const ac = new AbortController();
-						convKills.add(ac);
-						try {
-							const signals = [signal, ac.signal].filter((s): s is AbortSignal => s !== undefined);
-							const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
-							const result = (await base.execute(toolCallId, params as never, combinedSignal, onUpdate, ctx)) as {
-								content?: Array<{ type: string; text?: string }>;
-							};
-							const p = params as { head?: number; tail?: number };
-							if ((p?.head || p?.tail) && result?.content?.[0]?.text != null) {
-								result.content![0].text = applyHeadTail(result.content![0].text!, p.head, p.tail, this.getLang());
+			const makeCore = (convKills: Set<AbortController>): ToolDefinition => {
+				let core: ToolDefinition;
+				if (base) {
+					// 扩展提供了同名 bash：以扩展定义为基底，保留其 schema/描述/guidelines，
+					// 同时挂载 abort_bash 信号中断支持与 head/tail 输出后处理。
+					core = {
+						...base,
+						execute: async (toolCallId, params, signal, onUpdate, ctx) => {
+							const ac = new AbortController();
+							convKills.add(ac);
+							try {
+								const signals = [signal, ac.signal].filter((s): s is AbortSignal => s !== undefined);
+								const combinedSignal = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+								const result = (await base.execute(toolCallId, params as never, combinedSignal, onUpdate, ctx)) as {
+									content?: Array<{ type: string; text?: string }>;
+								};
+								const p = params as { head?: number; tail?: number };
+								if ((p?.head || p?.tail) && result?.content?.[0]?.text != null) {
+									result.content![0].text = applyHeadTail(result.content![0].text!, p.head, p.tail, this.getLang());
+								}
+								return result as never;
+							} finally {
+								convKills.delete(ac);
 							}
-							return result as never;
-						} finally {
-							convKills.delete(ac);
-						}
-					},
-				};
-			} else {
-				// 没有扩展 bash：完整的原生与终端自适应分流 bash（行为与改动前逐字一致）。
-				core = makeAdaptiveBashTool(
-					makeKillableBashTool(cwd, convKills, () => this.getLang()),
-					terminals
-						? makeTerminalBashTool(terminals, {
-								cwd,
-								defaultPersist: () => false,
-								idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
-								maxForegroundMs: () =>
-									Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
-								kills: convKills,
-								notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
-								lang: () => this.getLang(),
-							})
-						: makeKillableBashTool(cwd, convKills, () => this.getLang()),
-					() => Boolean(terminals && this.settingsSvc.current.terminalBash),
-				);
-			}
+						},
+					};
+				} else {
+					// 没有扩展 bash：完整的原生与终端自适应分流 bash（行为与改动前逐字一致）。
+					core = makeAdaptiveBashTool(
+						makeKillableBashTool(cwd, convKills, () => this.getLang()),
+						terminals
+							? makeTerminalBashTool(terminals, {
+									cwd,
+									defaultPersist: () => false,
+									idleMs: () => Math.max(0, Math.floor(this.settingsSvc.current.terminalBashIdleMs) || 0),
+									maxForegroundMs: () =>
+										Math.max(0, Math.floor(this.settingsSvc.current.terminalBashMaxForegroundMs) || 0),
+									kills: convKills,
+									notifyBackgroundDone: (info) => this.notifyTerminalBashDone(terminals, info),
+									lang: () => this.getLang(),
+								})
+							: makeKillableBashTool(cwd, convKills, () => this.getLang()),
+						() => Boolean(terminals && this.settingsSvc.current.terminalBash),
+					);
+				}
+
+				return core;
+			};
+			// SDK constructs tools before registering the Conversation. Resolve ownership
+			// when execution begins; bindOwner supplies the current holder/session after takeover.
+			const core: ToolDefinition = {
+				...makeCore(new Set<AbortController>()),
+				execute: (...args) => {
+					const conv = evidenceSession
+						? this.toolConversationHome(evidenceSession)?.conv
+						: ownerId
+							? this.convs.get(ownerId)
+							: undefined;
+					if (!conv) throw new Error("Tool conversation is no longer available");
+					return makeCore(this.bashKillsOf(conv)).execute(...args);
+				},
+			};
 
 			const guarded = withToolGuard(
 				withWorkspaceSnapshotGate(core, () => this.awaitPendingWorkspaceSnapshot(ownerId)),
@@ -11864,22 +11872,12 @@ export class ClientSession {
 	 *  every other conversation continue (the bash tool returns an aborted error and
 	 *  the model moves on). Targets the per-conversation bucket registered by the
 	 *  bash tool paths ({@link makeKillableBashTool} / {@link makeTerminalBashTool});
-	 *  without an explicit id it falls back to the active conversation, and to the
-	 *  single live bucket when that one has nothing running. */
+	 *  without an explicit id it targets only the active conversation. */
 	async abortBash(convId?: string): Promise<void> {
-		const targetId = convId || this.activeId || "";
-		let kills = this.bashKills.get(targetId);
-		let ownerId = targetId;
-		// 前端 abort_bash 可以不带对话 id：没点名、当前对话又没有命令在跑时，若整个
-		// 客户端只有一处命令在跑，就停那一处（子代理详情页的「停止」仍可用）。只有
-		// 一处 ≈ 唯一目标，所以永远不会一次杀掉多个对话。
-		if (!convId && (!kills || kills.size === 0)) {
-			const live = [...this.bashKills.entries()].filter(([, set]) => set.size > 0);
-			if (live.length === 1) {
-				ownerId = live[0][0];
-				kills = live[0][1];
-			}
-		}
+		const ownerConv = this.convs.get(convId ?? this.activeId);
+		// Abort listeners run synchronously and may detach, replace, or reset the owner.
+		const runtime = ownerConv?.runtime;
+		const kills = ownerConv?.bashKills;
 		if (!kills || kills.size === 0) {
 			this.emit({
 				type: "notice",
@@ -11902,10 +11900,9 @@ export class ClientSession {
 		// 会看到「命令被用户中止」而不是普通失败，并据此继续（不会困惑于
 		// 为什么命令失败了）。
 		// 停止提示发给命令真正所属的那个对话，别写进用户正在看的另一个对话。
-		const ownerConv = this.convs.get(ownerId) ?? this.convs.get(this.activeId);
 		try {
 			if (ownerConv) this.assertSubagentWorktreeAdmission(ownerConv);
-			await ownerConv?.runtime.session.sendUserMessage(
+			await runtime?.session.sendUserMessage(
 				"（系统：用户手动停止了刚才的 bash 命令——命令被中止，终止前已输出的内容在对应工具结果里。请据此继续，不要重跑被中止的命令，除非确实必要。）",
 			);
 		} catch {
