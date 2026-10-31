@@ -19,6 +19,7 @@ export interface DesktopUpdaterEvent {
 contextBridge.exposeInMainWorld("piDesktop", {
 	isDesktop: true as const,
 	platform: process.platform,
+	openHub: (url: string): Promise<boolean> => ipcRenderer.invoke("pi-desktop:open-hub", url),
 	setTitleBarOverlay: (opts: { color?: string; symbolColor?: string }) =>
 		ipcRenderer.invoke("pi-desktop:set-title-bar-overlay", opts),
 	onFullScreenChange: (cb: (isFullScreen: boolean) => void) => {

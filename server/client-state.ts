@@ -368,6 +368,7 @@ export interface ClientSettings {
 	/** 问卷提问开关（默认开；关 → 不弹对话框且 ask_user_question 工具同步禁用。不进预设）。 */
 	questionnaireEnabled: boolean;
 	questionPresentation?: "queue" | "all" | "manual";
+	toolApprovalPresentation?: "queue" | "all" | "manual";
 	questionTimeoutSeconds?: number;
 	/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危检测
 	 *  直接放行、插件 pre guard 的 ask 也按放行处理。纯运行开关，不进预设、不需 reload。 */
@@ -688,9 +689,9 @@ export interface ClientState {
 	 *  English default, issue #91) for tool return values / AI prompts.
 	 *  Missing = never reported → English. */
 	locale?: string;
-	/** 客户端当前激活的智能体引擎（"pi" | "dsh" | "claude" | "durable"，按标签页 clientId 独立记忆，刷新后保持）。 */
+	/** 客户端当前激活的智能体引擎（"pi" | "dsh" | "codex" | "claude" | "durable"，按标签页 clientId 独立记忆，刷新后保持）。 */
 	engine?: EngineId;
-	/** 全局默认智能体引擎（"pi" | "dsh" | "claude" | "durable"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
+	/** 全局默认智能体引擎（"pi" | "dsh" | "codex" | "claude" | "durable"，存于 __settings__ 下，新标签页与重启后默认跟随）。 */
 	defaultEngine?: EngineId;
 	/** 客户端最近活跃时间（epoch ms）。服务端在 per-client 写路径上打点（内存态，
 	 *  随任意后续 save 落盘）；旧存档缺省时按 max(projects[].lastUsed, interrupted[].at)
@@ -1219,6 +1220,10 @@ export class ClientStateStore {
 				stored?.questionPresentation === "all" || stored?.questionPresentation === "manual"
 					? stored.questionPresentation
 					: "queue",
+			toolApprovalPresentation:
+				stored?.toolApprovalPresentation === "queue" || stored?.toolApprovalPresentation === "manual"
+					? stored.toolApprovalPresentation
+					: "all",
 			questionTimeoutSeconds:
 				Number.isFinite(stored?.questionTimeoutSeconds) && Number(stored?.questionTimeoutSeconds) >= 0
 					? Math.floor(Number(stored?.questionTimeoutSeconds))
@@ -1312,6 +1317,7 @@ export class ClientStateStore {
 			editSoftEnabled: settings.editSoftEnabled ?? cur.editSoftEnabled ?? false,
 			questionnaireEnabled: settings.questionnaireEnabled ?? cur.questionnaireEnabled ?? true,
 			questionPresentation: settings.questionPresentation ?? cur.questionPresentation ?? "queue",
+			toolApprovalPresentation: settings.toolApprovalPresentation ?? cur.toolApprovalPresentation ?? "all",
 			questionTimeoutSeconds: settings.questionTimeoutSeconds ?? cur.questionTimeoutSeconds ?? 240,
 			goalModeEnabled: settings.goalModeEnabled ?? cur.goalModeEnabled ?? true,
 			parallelReminderEnabled: settings.parallelReminderEnabled ?? cur.parallelReminderEnabled ?? true,
@@ -1813,7 +1819,7 @@ export class ClientStateStore {
 	/** 读取某客户端（标签页）上次使用的引擎（未设置返回 undefined）。 */
 	getClientEngine(clientId: string): EngineId | undefined {
 		const eng = this.load()[clientId]?.engine;
-		return eng === "dsh" || eng === "pi" || eng === "claude" || eng === "durable" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "codex" || eng === "claude" || eng === "durable" ? eng : undefined;
 	}
 
 	/** 保存某客户端（标签页）当前使用的引擎。 */
@@ -1828,7 +1834,7 @@ export class ClientStateStore {
 	/** 读取全局默认引擎（存在 __settings__ 下，新标签页及服务重启后默认跟随）。 */
 	getDefaultEngine(): EngineId | undefined {
 		const eng = this.load()[ClientStateStore.GLOBAL_SETTINGS_KEY]?.defaultEngine;
-		return eng === "dsh" || eng === "pi" || eng === "claude" || eng === "durable" ? eng : undefined;
+		return eng === "dsh" || eng === "pi" || eng === "codex" || eng === "claude" || eng === "durable" ? eng : undefined;
 	}
 
 	/** 保存全局默认引擎。 */

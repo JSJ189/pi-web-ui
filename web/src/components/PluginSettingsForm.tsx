@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { UiPluginInfo, UiPluginSettingField } from "../types";
-import { useT } from "../i18n";
+import { useT, useLocale, isZhLocale } from "../i18n";
 import { appSend } from "../app-globals";
 import { pluginSelectValues, type PluginSelectModel } from "../plugin-setting-options";
 import { THINKING_VALUES, type ThinkingValue } from "../thinking-levels";
@@ -25,6 +25,8 @@ export function PluginSettingsForm({
 	models?: PluginSelectModel[];
 }) {
 	const t = useT();
+	const locale = useLocale();
+	const zh = isZhLocale(locale);
 	const schema = plugin.settingsSchema ?? [];
 	// secret 的 settingsValues 是有无布尔：draft 里恒置空串（不把布尔发回去）。
 	const [draft, setDraft] = useState<Record<string, unknown>>(() => {
@@ -37,7 +39,7 @@ export function PluginSettingsForm({
 	if (schema.length === 0) return null;
 
 	const set = (key: string, v: unknown) => setDraft((prev) => ({ ...prev, [key]: v }));
-	// select 候选值与标签：空值 = 跟随全局默认；模型取清单标签，思考强度走 i18n 档位文案。
+	// select 候选值与标签：空值 = 跟随全局默认；模型取清单标签，思考强度走 i18n 档位文案；静态选项支持 label/labelEn。
 	const selectOptions = (f: UiPluginSettingField) =>
 		pluginSelectValues(f, models, draft[f.key]).map((v) => {
 			if (v === "") return { value: "", label: t("pluginSettingsInherit") };
@@ -47,6 +49,13 @@ export function PluginSettingsForm({
 			if (f.optionsFrom === "models") {
 				const hit = models.find((m) => `${m.provider}/${m.id}` === v);
 				if (hit) return { value: v, label: hit.label };
+			}
+			const staticOpt = f.options?.find((o) => (typeof o === "string" ? o : o.value) === v);
+			if (staticOpt && typeof staticOpt === "object") {
+				const lbl = zh
+					? (staticOpt.label ?? staticOpt.labelEn ?? staticOpt.value)
+					: (staticOpt.labelEn ?? staticOpt.label ?? staticOpt.value);
+				return { value: v, label: lbl };
 			}
 			return { value: v, label: v };
 		});

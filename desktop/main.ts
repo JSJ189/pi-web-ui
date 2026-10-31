@@ -19,6 +19,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isAllowedExternalUrl } from "./external-url.js";
+import { createHubBrowser } from "./hub-browser.js";
 import { setupPortableMode } from "./portable.js";
 import { buildDesktopLoadUrl, DEFAULT_DESKTOP_PORT, resolveHealthTimeoutMs, waitForHealth } from "./startup.js";
 
@@ -203,6 +204,14 @@ async function createWindow(url: string): Promise<void> {
 		},
 	});
 	const loadUrl = buildDesktopLoadUrl(url, process.env);
+	const openHub = createHubBrowser();
+	ipcMain.removeHandler("pi-desktop:open-hub");
+	ipcMain.handle("pi-desktop:open-hub", (event, target: unknown) => {
+		if (event.sender !== mainWin?.webContents || event.senderFrame !== mainWin.webContents.mainFrame)
+			throw new Error("Untrusted device center request");
+		if (typeof target !== "string") throw new Error("Invalid device center URL");
+		return openHub(target);
+	});
 	console.log(`[desktop] opening window: ${url}`);
 	try {
 		await mainWin.loadURL(loadUrl);

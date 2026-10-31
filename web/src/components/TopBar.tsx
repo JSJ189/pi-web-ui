@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
+import { BrandDeviceMenu } from "./BrandDeviceMenu";
 import {
 	FiBox,
 	FiDownload,
@@ -63,7 +64,6 @@ import { desktopReleasesUrl, useDesktopUpdater } from "../desktop-updater";
 import { BarItem } from "./BarItem";
 import { EnginePicker } from "./EnginePicker";
 import { WindowControls } from "./WindowControls";
-import { appUrl } from "../base-url";
 
 /** 「安装全局引擎」按钮的目标（issue #321）：buildUpdateCommand 对 pi-core 生成
  *  `npm i -g <name>@latest`，装完重启服务即由 resolve-global-sdk 自动切到更新的那份。 */
@@ -1009,19 +1009,7 @@ export function TopBar({
 	 * 可见性（slot 显隐）由调用方的条目流决定，TABS 白名单与视图门禁留在各工厂里。
 	 */
 	const hostNodes: Record<string, ReactNode> = {
-		"host:brand": (
-			<span className="brand">
-				<img
-					className="brand-logo"
-					src={appUrl("/icons/icon-192.png")}
-					alt="pi-web-ui"
-					width={26}
-					height={26}
-					draggable={false}
-				/>
-				<span className="brand-name">pi-web-ui</span>
-			</span>
-		),
+		"host:brand": <BrandDeviceMenu />,
 		// 打开项目：切整个工作区（set_cwd），与视图无关 —— 终端 / Git / 插件视图里同样常驻可点。
 		"host:open-project": (
 			<button

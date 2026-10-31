@@ -154,13 +154,13 @@ export interface AgentEngineCapabilities {
 /**
  * 支持的智能体底座引擎标识。
  */
-export type EngineId = "pi" | "dsh" | "claude" | "durable";
+export type EngineId = "pi" | "dsh" | "codex" | "claude" | "durable";
 
 /**
  * 引擎状态元数据：描述该引擎在宿主系统中的安装就绪状态。
  */
 export interface EngineStatus {
-	/** 引擎唯一标识（如 "pi" | "dsh" | "claude" | "durable" 或第三方扩展标识） */
+	/** 引擎唯一标识（如 "pi" | "dsh" | "codex" | "claude" | "durable" 或第三方扩展标识） */
 	id: string;
 	/** 是否已在宿主环境中检测到对应的全局包或 CLI 运行时 */
 	installed: boolean;
@@ -303,6 +303,8 @@ export interface UiState {
 	 * 待用户审批的高危工具调用（Edit & Run 人机协同）。当前对话有待审批时携带，切会话/刷新恢复。
 	 */
 	pendingApproval?: UiToolApproval | null;
+	/** All pending approvals owned by this connection, including background conversations. */
+	pendingApprovals?: UiToolApproval[];
 	/**
 	 * 子代理同行交接协同关系链（Peer-to-Peer Handoff relationships: fromRunId -> toRunId）。
 	 */
@@ -433,7 +435,7 @@ export interface PromptAttachment {
 	/** Workspace path — except for mode "page", where it is the page's origin
 	 *  (e.g. "https://example.com"), which is also the browser_page `target`,
 	 *  and mode "conversation", where it is unused ("") — the reference
-	 *  travels in conversationId/sessionPath instead. */
+	 *  travels in conversationId/sessionPath instead. For mode "canvas", path is the graphId. */
 	path: string;
 	/** "reference" = path-only aside（默认；文件内容不进 prompt）。
 	 *  "lines" = same reference plus the 1-based inclusive range the user picked.
@@ -446,7 +448,7 @@ export interface PromptAttachment {
 	 *  right-click / global-search quote): the server emits a small
 	 *  <conversation-ref> aside pointing at it, and the model fetches the
 	 *  transcript on demand with conversation(action="read"). */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote" | "canvas";
 	/** mode "quote"：path 留空，引用原文和来源保存在 quote。 */
 	quote?: TextQuote;
 	/** mode "conversation" + 引用运行中对话：conversation id（如 "c3"，含子代理）。 */
@@ -502,7 +504,7 @@ export interface QueuedPromptItem {
 	createdAt?: number;
 }
 
-export type CanvasEngineId = "pi" | "dsh" | "claude" | "durable";
+export type CanvasEngineId = "pi" | "dsh" | "codex" | "claude" | "durable";
 export type CanvasNodeRole =
 	| "architect"
 	| "coder"
@@ -990,7 +992,7 @@ export type ClientMessage =
 	 *  this process exits and its supervisor brings it back). The server refuses
 	 *  when no supervisor manages this instance (foreground / dev / Docker). */
 	| { type: "restart_service" }
-	/** Switch active agent engine ("pi" | "dsh" | "claude" | "durable") for this client tab in-process without restarting. */
+	/** Switch active agent engine ("pi" | "dsh" | "codex" | "claude" | "durable") for this client tab in-process without restarting. */
 	| { type: "switch_engine"; engine: EngineId }
 	/** Re-check engine installation statuses (e.g. after installing an engine via terminal). */
 	| { type: "check_engines"; force?: boolean }
@@ -1214,6 +1216,7 @@ export type ClientMessage =
 			/** 问卷提问（ask_user_question）开关（默认开）。关 → 模型不再弹问卷。 */
 			questionnaireEnabled?: boolean;
 			questionPresentation?: "queue" | "all" | "manual";
+			toolApprovalPresentation?: "queue" | "all" | "manual";
 			questionTimeoutSeconds?: number;
 			/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危
 			 *  检测直接放行、插件 pre guard 的 ask 也按放行处理（纯运行开关，live 生效，无需 reload）。 */
@@ -2022,6 +2025,7 @@ export interface UiApprovalHit {
 /** 待用户审批的高危工具调用（Edit & Run 人机协同）。 */
 export interface UiToolApproval {
 	id: string;
+	createdAt?: number;
 	toolCallId: string;
 	toolName: string;
 	params: Record<string, unknown> | unknown;
@@ -2086,6 +2090,10 @@ export interface BgServer {
 /** One run of a built-in scheduled task (issue #184): trigger time, outcome,
  *  duration and the headless conversation it ran in (if any). */
 export interface SchedulerRunInfo {
+	/** Missing on legacy runs; defaults to conversation. */
+	target?: "conversation" | "canvas";
+	graphId?: string;
+	runId?: string;
 	at: number;
 	ok: boolean;
 	durationMs: number;
@@ -2097,6 +2105,10 @@ export interface SchedulerRunInfo {
 /** Built-in scheduled task (CRUD input): cron = 5-field expression,
  *  interval = milliseconds (as string or number, min 60s). */
 export interface SchedulerTaskInput {
+	/** Missing on legacy tasks; defaults to conversation. */
+	target?: "conversation" | "canvas";
+	/** Canvas workflow to start; cwd supplies its run base directory. */
+	graphId?: string;
 	id?: string;
 	name?: string;
 	description?: string;
@@ -2119,6 +2131,8 @@ export interface SchedulerTaskInput {
 
 /** Built-in scheduled task with runtime state (server -> client). */
 export interface SchedulerTaskView {
+	target?: "conversation" | "canvas";
+	graphId?: string;
 	id: string;
 	name: string;
 	description: string;
@@ -2419,8 +2433,8 @@ export interface UiPluginSettingField {
 	/** number 用：范围。 */
 	min?: number;
 	max?: number;
-	/** select 用：静态候选值。 */
-	options?: string[];
+	/** select 用：静态候选值（支持纯字符串数组或带标签的选项对象数组）。 */
+	options?: (string | UiSelectOption)[];
 	/** select 用：候选项由**宿主**按数据源在浏览器侧现算（插件不必自己维护清单，
 	 *  也就不会随模型配置变化而过期）：
 	 *  "models" = 已配置鉴权的模型（值 `provider/id`，标签同设置面板的模型选择器）；
@@ -3435,6 +3449,7 @@ export interface UiSettingsState {
 	/** 问卷提问开关（默认开）。关 → 模型不再弹问卷对话框。 */
 	questionnaireEnabled: boolean;
 	questionPresentation?: "queue" | "all" | "manual";
+	toolApprovalPresentation?: "queue" | "all" | "manual";
 	questionTimeoutSeconds?: number;
 	/** 工具执行审批（人机协同）总开关（默认开）。关 → 一切审批都不弹：内置高危检测
 	 *  直接放行、插件 pre guard 的 ask 也按放行处理（纯运行开关，不进预设、无需 reload）。 */

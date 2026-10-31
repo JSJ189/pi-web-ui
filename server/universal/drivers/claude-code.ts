@@ -25,6 +25,7 @@ import {
 	isModelProtocolSupportedByEngine,
 } from "../../model-resolver.js";
 import { discoverDiskSkills } from "../../skill-discovery.js";
+import { formatUnavailableCanvasReference } from "../universal-attachments.js";
 
 export interface ClaudeCodeDriverOptions {
 	/** 自定义 claude 执行命令路径（默认 "claude"） */
@@ -233,6 +234,10 @@ export class ClaudeCodeDriver extends BaseAgentDriver {
 		if (attachments && attachments.length > 0) {
 			const notes: string[] = [];
 			for (const att of attachments) {
+				if (att.mode === "canvas") {
+					notes.push(formatUnavailableCanvasReference(att));
+					continue;
+				}
 				if (att.path) {
 					const lineRange = att.lines ? ` (行 ${att.lines.start}-${att.lines.end})` : "";
 					notes.push(`[文件引用: ${att.path}${lineRange}]`);

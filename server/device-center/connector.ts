@@ -234,23 +234,40 @@ export function createDeviceConnector(options: DeviceConnectorOptions) {
 									else delete responseHeaders.location;
 								}
 								sendFrame(ws, { type: "response", id, status: res.statusCode, headers: responseHeaders });
-								let bytes = 0;
-								res.on("data", (data: Buffer) => {
-									bytes += data.length;
-									if (bytes > RELAY_LIMITS.body || !sendChunks(ws, "response_body", id, data)) {
+								void (async () => {
+									let bytes = 0;
+									try {
+										// Pull only as fast as the relay socket drains, instead of aborting bursts.
+										for await (const data of res) {
+											const chunk = Buffer.from(data);
+											bytes += chunk.length;
+											if (bytes > RELAY_LIMITS.body) throw new Error("Response too large");
+											for (let offset = 0; offset < chunk.length; offset += RELAY_LIMITS.chunk) {
+												while (ws.bufferedAmount > RELAY_LIMITS.queue / 2) {
+													if (!streams.has(id) || ws.readyState !== WebSocket.OPEN) throw new Error("Cancelled");
+													await new Promise((resolve) => setTimeout(resolve, 5));
+												}
+												if (!streams.has(id) || ws.readyState !== WebSocket.OPEN) throw new Error("Cancelled");
+												await new Promise<void>((resolve, reject) => {
+													ws.send(
+														JSON.stringify({
+															type: "response_body",
+															id,
+															data: chunk.subarray(offset, offset + RELAY_LIMITS.chunk).toString("base64"),
+														}),
+														(error) => (error ? reject(error) : resolve()),
+													);
+												});
+											}
+										}
+										sendFrame(ws, { type: "response_end", id });
+									} catch {
 										res.destroy();
-										dispose(id);
 										sendFrame(ws, { type: "error", id });
+									} finally {
+										dispose(id);
 									}
-								});
-								res.on("end", () => {
-									sendFrame(ws, { type: "response_end", id });
-									dispose(id);
-								});
-								res.on("error", () => {
-									sendFrame(ws, { type: "error", id });
-									dispose(id);
-								});
+								})();
 							},
 						);
 						stream.req = req;

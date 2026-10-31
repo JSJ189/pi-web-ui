@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FiClock, FiEdit3, FiPlay, FiPlus, FiTrash2, FiX } from "react-icons/fi";
-import type { SchedulerTaskView, UiVisionBridgeModel } from "../types";
+import type { CanvasGraphSummary, SchedulerTaskInput, SchedulerTaskView, UiVisionBridgeModel } from "../types";
+import { searchCanvasMentions } from "../canvas-mentions";
 import { useT } from "../i18n";
 import { appSend } from "../app-globals";
 import { THINKING_VALUES } from "../thinking-levels";
@@ -23,6 +24,8 @@ const CRON_PRESETS: { value: string; key: string }[] = [
 ];
 
 interface Draft {
+	target: "conversation" | "canvas";
+	graphId: string;
 	id: string;
 	name: string;
 	description: string;
@@ -37,8 +40,10 @@ interface Draft {
 	catchUp: boolean;
 }
 
-function blankDraft(cwd: string): Draft {
+export function blankDraft(cwd: string): Draft {
 	return {
+		target: "conversation",
+		graphId: "",
 		id: "",
 		name: "",
 		description: "",
@@ -54,9 +59,11 @@ function blankDraft(cwd: string): Draft {
 	};
 }
 
-function draftFromTask(t: SchedulerTaskView): Draft {
+export function draftFromTask(t: SchedulerTaskView): Draft {
 	const presetHit = t.kind === "cron" && CRON_PRESETS.some((p) => p.value === t.spec);
 	return {
+		target: t.target ?? (t.graphId ? "canvas" : "conversation"),
+		graphId: t.graphId ?? "",
 		id: t.id,
 		name: t.name,
 		description: t.description,
@@ -69,6 +76,36 @@ function draftFromTask(t: SchedulerTaskView): Draft {
 		model: t.model,
 		thinkingLevel: t.thinkingLevel,
 		catchUp: t.catchUp === "once",
+	};
+}
+
+export function canSaveDraft(draft: Draft, graphs: CanvasGraphSummary[], loading: boolean): boolean {
+	return Boolean(
+		draft.name.trim() &&
+		draft.cwd.trim() &&
+		(draft.target === "canvas" ? !loading && graphs.some((graph) => graph.id === draft.graphId) : draft.prompt.trim()),
+	);
+}
+
+export function taskInputFromDraft(draft: Draft): SchedulerTaskInput {
+	return {
+		...(draft.id ? { id: draft.id } : {}),
+		target: draft.target,
+		...(draft.target === "canvas" ? { graphId: draft.graphId } : {}),
+		name: draft.name.trim(),
+		description: draft.description.trim(),
+		cwd: draft.cwd.trim(),
+		kind: draft.kind,
+		spec:
+			draft.kind === "cron"
+				? draft.cron.trim()
+				: String(Math.max(1, Math.floor(Number(draft.intervalMinutes) || 0)) * 60000),
+		prompt: draft.prompt.trim(),
+		...(draft.target === "conversation" && draft.model.trim() ? { model: draft.model.trim() } : {}),
+		...(draft.target === "conversation" && draft.thinkingLevel.trim()
+			? { thinkingLevel: draft.thinkingLevel.trim() }
+			: {}),
+		catchUp: draft.catchUp ? "once" : "skip",
 	};
 }
 
@@ -103,6 +140,23 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 	const t = useT();
 	const [draft, setDraft] = useState<Draft | null>(null);
 	const [isNew, setIsNew] = useState(false);
+	const [graphs, setGraphs] = useState<CanvasGraphSummary[]>([]);
+	const [graphsLoading, setGraphsLoading] = useState(false);
+	const draftTarget = draft?.target;
+	useEffect(() => {
+		if (draftTarget !== "canvas") return;
+		let active = true;
+		setGraphs([]);
+		setGraphsLoading(true);
+		void searchCanvasMentions(() => appSend({ type: "canvas_list" })).then((items) => {
+			if (!active) return;
+			setGraphs(items);
+			setGraphsLoading(false);
+		});
+		return () => {
+			active = false;
+		};
+	}, [draftTarget, cwd]);
 	const [openHistory, setOpenHistory] = useState<Set<string>>(new Set());
 
 	// 打开面板即向服务端要一份新鲜列表（重连/别处改动后对齐）。
@@ -120,26 +174,8 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 		});
 
 	const save = () => {
-		if (!draft) return;
-		const kind = draft.kind;
-		appSend({
-			type: "schedule_save",
-			task: {
-				...(draft.id ? { id: draft.id } : {}),
-				name: draft.name.trim(),
-				description: draft.description.trim(),
-				cwd: draft.cwd.trim(),
-				kind,
-				spec:
-					kind === "cron"
-						? draft.cron.trim()
-						: String(Math.max(1, Math.floor(Number(draft.intervalMinutes) || 0)) * 60000),
-				prompt: draft.prompt.trim(),
-				...(draft.model.trim() ? { model: draft.model.trim() } : {}),
-				...(draft.thinkingLevel.trim() ? { thinkingLevel: draft.thinkingLevel.trim() } : {}),
-				catchUp: draft.catchUp ? "once" : "skip",
-			},
-		});
+		if (!draft || !canSaveDraft(draft, graphs, graphsLoading)) return;
+		appSend({ type: "schedule_save", task: taskInputFromDraft(draft) });
 		setDraft(null);
 	};
 
@@ -187,6 +223,11 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 								</button>
 							</div>
 							<div className="scheduler-line2">
+								{(task.target ?? (task.graphId ? "canvas" : "conversation")) === "canvas" && (
+									<span>
+										{t("schedulerTargetCanvas")} · {task.graphId}
+									</span>
+								)}
 								<span title={task.cwd}>{task.cwd}</span>
 								<span>·</span>
 								<span title={task.kind === "cron" ? task.spec : `${task.spec} ms`}>{specSummary(task, t)}</span>
@@ -296,7 +337,9 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 								/>
 							</div>
 							<div className="set-mode-row">
-								<label className="set-field-label">{t("schedulerCwdLabel")}</label>
+								<label className="set-field-label">
+									{t(draft.target === "canvas" ? "schedulerRunBaseLabel" : "schedulerCwdLabel")}
+								</label>
 								<div className="scheduler-cwd-row">
 									<input
 										className="set-input"
@@ -309,6 +352,47 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 									</button>
 								</div>
 							</div>
+							<div className="set-mode-row">
+								<label className="set-field-label">{t("schedulerTargetLabel")}</label>
+								<select
+									className="set-select"
+									aria-label={t("schedulerTargetLabel")}
+									value={draft.target}
+									onChange={(e) => setDraft({ ...draft, target: e.target.value as Draft["target"] })}
+								>
+									<option value="conversation">{t("schedulerTargetConversation")}</option>
+									<option value="canvas">{t("schedulerTargetCanvas")}</option>
+								</select>
+							</div>
+							{draft.target === "canvas" && (
+								<>
+									<div className="set-mode-row">
+										<label className="set-field-label">{t("schedulerGraphLabel")}</label>
+										<select
+											className="set-select"
+											aria-label={t("schedulerGraphLabel")}
+											value={draft.graphId}
+											disabled={graphsLoading}
+											onChange={(e) => setDraft({ ...draft, graphId: e.target.value })}
+										>
+											<option value="">{t("schedulerGraphPlaceholder")}</option>
+											{draft.graphId && !graphs.some((graph) => graph.id === draft.graphId) && (
+												<option value={draft.graphId}>
+													{draft.graphId} · {t("schedulerGraphUnavailable")}
+												</option>
+											)}
+											{graphs.map((graph) => (
+												<option key={graph.id} value={graph.id}>
+													{graph.name} · {graph.id}
+												</option>
+											))}
+										</select>
+									</div>
+									{!graphsLoading && (!draft.graphId || !graphs.some((graph) => graph.id === draft.graphId)) && (
+										<p className="set-hint">{t("schedulerGraphHint")}</p>
+									)}
+								</>
+							)}
 							<div className="set-mode-row">
 								<label className="set-field-label">{t("schedulerKindLabel")}</label>
 								<select
@@ -366,44 +450,50 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 								<textarea
 									className="set-input"
 									rows={4}
-									placeholder={t("schedulerPromptPlaceholder")}
+									placeholder={t(
+										draft.target === "canvas" ? "schedulerCanvasPromptPlaceholder" : "schedulerPromptPlaceholder",
+									)}
 									value={draft.prompt}
 									onChange={(e) => setDraft({ ...draft, prompt: e.target.value })}
 								/>
 							</div>
-							<div className="set-mode-row">
-								<label className="set-field-label">{t("schedulerModelLabel")}</label>
-								<select
-									className="set-select"
-									value={draft.model}
-									onChange={(e) => setDraft({ ...draft, model: e.target.value })}
-								>
-									<option value="">{t("subagentFollowMain")}</option>
-									{models.map((m) => (
-										<option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
-											{m.label}
-										</option>
-									))}
-								</select>
-							</div>
-							{models.length === 0 && <p className="set-hint">{t("subagentNoModels")}</p>}
-							<div className="set-mode-row">
-								<label className="set-field-label">
-									{t("schedulerThinkingLabel")} <HintTip text={t("tplThinkingHint")} />
-								</label>
-								<select
-									className="set-select"
-									value={draft.thinkingLevel}
-									onChange={(e) => setDraft({ ...draft, thinkingLevel: e.target.value })}
-								>
-									<option value="">{t("tplThinkingFollowMain")}</option>
-									{THINKING_VALUES.map((v) => (
-										<option key={v} value={v}>
-											{t(`thinking.${v}`)}
-										</option>
-									))}
-								</select>
-							</div>
+							{draft.target === "conversation" && (
+								<>
+									<div className="set-mode-row">
+										<label className="set-field-label">{t("schedulerModelLabel")}</label>
+										<select
+											className="set-select"
+											value={draft.model}
+											onChange={(e) => setDraft({ ...draft, model: e.target.value })}
+										>
+											<option value="">{t("subagentFollowMain")}</option>
+											{models.map((m) => (
+												<option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
+													{m.label}
+												</option>
+											))}
+										</select>
+									</div>
+									{models.length === 0 && <p className="set-hint">{t("subagentNoModels")}</p>}
+									<div className="set-mode-row">
+										<label className="set-field-label">
+											{t("schedulerThinkingLabel")} <HintTip text={t("tplThinkingHint")} />
+										</label>
+										<select
+											className="set-select"
+											value={draft.thinkingLevel}
+											onChange={(e) => setDraft({ ...draft, thinkingLevel: e.target.value })}
+										>
+											<option value="">{t("tplThinkingFollowMain")}</option>
+											{THINKING_VALUES.map((v) => (
+												<option key={v} value={v}>
+													{t(`thinking.${v}`)}
+												</option>
+											))}
+										</select>
+									</div>
+								</>
+							)}
 							<label className="scheduler-check">
 								<input
 									type="checkbox"
@@ -421,7 +511,7 @@ export function SchedulerPanel({ tasks, cwd, models }: SchedulerPanelProps) {
 								<button
 									type="button"
 									className="btn primary"
-									disabled={!draft.name.trim() || !draft.cwd.trim() || !draft.prompt.trim()}
+									disabled={!canSaveDraft(draft, graphs, graphsLoading)}
 									onClick={save}
 								>
 									{t("schedulerSave")}

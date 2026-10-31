@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { FiChevronDown, FiChevronUp, FiPlus, FiUsers } from "react-icons/fi";
 import { appUrl } from "../base-url";
+import { DeviceGroupMembers } from "./DeviceGroupMembers";
+import { DeviceGroupBotDialog } from "./DeviceGroupBotDialog";
 import { withToken } from "../auth-token";
 import { isZhLocale, useI18n } from "../i18n";
 import { openContextMenu } from "../context-menu-state";
@@ -153,6 +155,8 @@ export function DeviceGroupSection({
 	const { locale } = useI18n();
 	const w = words[isZhLocale(locale) ? "zh" : "en"];
 	const [collapsed, setCollapsed] = useState(false);
+	const [addingBots, setAddingBots] = useState<SidebarDeviceGroup | null>(null);
+	const [expandedRooms, setExpandedRooms] = useState<Set<string>>(() => new Set());
 	useEffect(() => onCollapsedChange?.(collapsed), [collapsed, onCollapsedChange]);
 	const [rooms, setRooms] = useState<SidebarDeviceGroup[]>([]);
 	const [bound, setBound] = useState<boolean | null>(null);
@@ -178,7 +182,7 @@ export function DeviceGroupSection({
 		let confirmedBound = false;
 		const poll = createDeviceGroupRefresh(
 			async (signal) => {
-				const status = await deviceGroupRequest<{ hubUrl?: string; deviceId?: string }>("status", signal);
+				const status = await deviceGroupRequest<{ hubUrl?: string; deviceId?: string }>("chat-status", signal);
 				confirmedBound = !!(status.hubUrl && status.deviceId);
 				if (!confirmedBound) return [];
 				const result = await deviceGroupRequest<{ rooms: SidebarDeviceGroup[] }>("rooms", signal);
@@ -326,24 +330,52 @@ export function DeviceGroupSection({
 					{!error && rooms.length === 0 && <div className="dg-side-empty">{loading ? w.loading : w.empty}</div>}
 					{rooms.map((room) => (
 						<div key={room.id} className="dg-side-item">
-							<div
-								role="button"
-								tabIndex={0}
-								className={`dg-side-row${selectedRoomId === room.id ? " is-selected" : ""}`}
-								aria-current={selectedRoomId === room.id ? "page" : undefined}
-								title={room.name}
-								onClick={() => openGroup({ roomId: room.id })}
-								onKeyDown={(event) => {
-									if (event.key === "Enter" || event.key === " ") {
-										event.preventDefault();
-										openGroup({ roomId: room.id });
+							<div className="dg-side-heading">
+								<button
+									type="button"
+									className="dg-side-toggle"
+									aria-expanded={expandedRooms.has(room.id)}
+									aria-label={`${room.name} · ${isZhLocale(locale) ? "成员" : "Members"}`}
+									onClick={() =>
+										setExpandedRooms((previous) => {
+											const next = new Set(previous);
+											if (next.has(room.id)) next.delete(room.id);
+											else next.add(room.id);
+											return next;
+										})
 									}
-								}}
-								onContextMenu={(event) => menu(event, room)}
-							>
-								<FiUsers />
-								<span className="dg-side-name">{room.name}</span>
+								>
+									{expandedRooms.has(room.id) ? <FiChevronUp /> : <FiChevronDown />}
+								</button>
+								<div
+									role="button"
+									tabIndex={0}
+									className={`dg-side-row${selectedRoomId === room.id ? " is-selected" : ""}`}
+									aria-current={selectedRoomId === room.id ? "page" : undefined}
+									title={room.name}
+									onClick={() => openGroup({ roomId: room.id })}
+									onKeyDown={(event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											openGroup({ roomId: room.id });
+										}
+									}}
+									onContextMenu={(event) => menu(event, room)}
+								>
+									<FiUsers />
+									<span className="dg-side-name">{room.name}</span>
+								</div>
+								<button
+									type="button"
+									className="dg-side-toggle"
+									aria-label={`${room.name} · ${isZhLocale(locale) ? "添加 Bot" : "Add Bot"}`}
+									title={isZhLocale(locale) ? "添加或新建 Bot" : "Add or create Bot"}
+									onClick={() => setAddingBots(room)}
+								>
+									<FiPlus />
+								</button>
 							</div>
+							{expandedRooms.has(room.id) && <DeviceGroupMembers botIds={room.botIds} roomId={room.id} />}
 							{renaming === room.id && (
 								<form
 									className="dg-side-rename"
@@ -376,6 +408,7 @@ export function DeviceGroupSection({
 					))}
 				</div>
 			)}
+			{addingBots && <DeviceGroupBotDialog room={addingBots} onClose={() => setAddingBots(null)} />}
 		</section>
 	);
 }

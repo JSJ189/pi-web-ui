@@ -147,6 +147,29 @@ describe("savePluginSettings", () => {
 		expect(mgr.savePluginSettings("cfg", { pollSec: 30 }).error).toBeUndefined();
 	});
 
+	it("select 静态 options 为对象数组（{ value, label }）：合法值通过，非法值被拒", async () => {
+		await makePlugin("objopts", {
+			settings: [
+				{
+					key: "model",
+					type: "select",
+					label: "模型",
+					default: "shizuku",
+					options: [
+						{ value: "shizuku", label: "🌸 雫" },
+						{ value: "haru", label: "🌿 春" },
+					],
+				},
+			],
+		});
+		// 合法保存
+		expect(mgr.savePluginSettings("objopts", { model: "haru" }, () => "zh").error).toBeUndefined();
+		const list = await mgr.list();
+		expect(list.find((x) => x.id === "objopts")?.settingsValues).toEqual({ model: "haru" });
+		// 非法保存被拒
+		expect(mgr.savePluginSettings("objopts", { model: "invalid" }, () => "zh").error).toContain("值非法");
+	});
+
 	it("未声明 schema 的插件保存被拒", async () => {
 		await makePlugin("noschema", { permissions: ["tools"] });
 		expect(mgr.savePluginSettings("noschema", { a: 1 }, () => "zh").error).toContain("没有声明式设置");

@@ -10,7 +10,7 @@ import { writeJsonAtomicSync } from "../atomic-file.js";
 import type { CanvasCustomCard, CanvasEngineId, CanvasNodeRole } from "../protocol.js";
 import { isSafeGraphId } from "./canvas-store.js";
 
-const VALID_ENGINES: ReadonlySet<string> = new Set(["pi", "dsh", "claude", "durable"]);
+const VALID_ENGINES: ReadonlySet<string> = new Set(["pi", "dsh", "codex", "claude", "durable"]);
 
 /** 卡片 id 与节点 id 同一安全口径：可作文件名/分支名，不穿越。 */
 export function isSafeCardId(id: unknown): id is string {

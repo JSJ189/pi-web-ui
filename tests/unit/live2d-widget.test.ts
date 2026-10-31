@@ -13,7 +13,7 @@ describe("plugins/live2d 挂件隐藏与穿透守卫", () => {
 	it("manifest.json 版本号已正确声明", () => {
 		const manifest = JSON.parse(readFileSync(join(LIVE2D_DIR, "manifest.json"), "utf-8"));
 		expect(manifest.id).toBe("live2d");
-		expect(manifest.version).toBe("0.1.16");
+		expect(manifest.version).toBe("0.1.17");
 	});
 
 	it("styles.mjs 中隐藏状态必须对容器及所有子元素强制 visibility: hidden 与 pointer-events: none", () => {
@@ -81,12 +81,12 @@ describe("plugins/live2d 挂件隐藏与穿透守卫", () => {
 		expect(widgetSrc).toContain("showThought(");
 		expect(widgetSrc).toContain("pi-l2d-bubble-thought");
 
-		// 检查服务端工具与 Marker 注册
-		expect(indexSrc).toContain("live2d_play_audio");
-		expect(indexSrc).toContain("live2d_stop_audio");
-		expect(indexSrc).toContain("live2d_trigger_blink");
-		expect(indexSrc).toContain("host.registerMarker");
+		// 检查服务端统合工具与 Marker 注册
 		expect(indexSrc).toContain('name: "live2d"');
+		expect(indexSrc).toContain('"play_audio"');
+		expect(indexSrc).toContain('"stop_audio"');
+		expect(indexSrc).toContain('"trigger_blink"');
+		expect(indexSrc).toContain("host.registerMarker");
 	});
 
 	it("audio-lipsync.mjs 必须实现 Pro VAD 口型管线 (音量解耦 + 共振峰 + 通量 + AGC)", () => {

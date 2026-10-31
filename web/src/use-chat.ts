@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef } from "react";
 import { randomUuid } from "./uuid";
+import { updateApprovalQueue } from "./pending-queue";
+import { CANVAS_LIST_EVENT } from "./canvas-mentions";
 import { makeTerminalBridge, type TerminalWriter, type TerminalOwnerKind } from "./terminal-bridge";
 import { withToken } from "./auth-token";
 import { appUrl } from "./base-url";
@@ -369,6 +371,7 @@ export interface ChatState {
 	} | null;
 	/** 待用户审批的高危工具调用（Human-in-the-Loop: Edit & Run）。 */
 	approval: UiToolApproval | null;
+	approvals: UiToolApproval[];
 	/** 待用户回答的模型提问（ask_user_question）——两个引擎共用。服务端是事实源：
 	 *  即时通道（question_pending）+ 快照（UiState.pendingQuestion，见 syncPendingQuestion）。 */
 	question: UiPendingQuestion | null;
@@ -750,6 +753,7 @@ type Action =
 	| {
 			type: "tool_approval";
 			approval: UiToolApproval | null;
+			resolvedId?: string;
 	  }
 	| {
 			type: "remote_question";
@@ -1051,6 +1055,9 @@ function reducer(state: ChatState, action: Action): ChatState {
 				transition: nextTransition,
 				sessions: nextSessions,
 				approval: reconciled.state.pendingApproval ?? null,
+				approvals:
+					reconciled.state.pendingApprovals ??
+					(reconciled.state.pendingApproval ? [reconciled.state.pendingApproval] : []),
 				activeConversationId: reconciled.state.conversationId,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, reconciled.state),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, reconciled.state),
@@ -1088,6 +1095,7 @@ function reducer(state: ChatState, action: Action): ChatState {
 				state: merged,
 				optimisticQueue: reconciled.tracker,
 				approval: merged.pendingApproval !== undefined ? (merged.pendingApproval ?? null) : state.approval,
+				approvals: merged.pendingApprovals ?? state.approvals,
 				activeConversationId: merged.conversationId,
 				liveOutputs: pruneLiveOutputs(state.liveOutputs, merged),
 				toolStatuses: pruneToolStatuses(state.toolStatuses, merged),
@@ -1138,7 +1146,11 @@ function reducer(state: ChatState, action: Action): ChatState {
 			};
 		}
 		case "tool_approval":
-			return { ...state, approval: action.approval };
+			return {
+				...state,
+				approval: action.approval,
+				approvals: updateApprovalQueue(state.approvals, action.approval, action.resolvedId),
+			};
 		case "tool_delta": {
 			const prev = state.liveOutputs.get(action.toolCallId);
 			const prevText = prev?.text ?? "";
@@ -1857,6 +1869,7 @@ export function useChat() {
 		dialog: null,
 		tuiOverlay: null,
 		approval: null,
+		approvals: [],
 		question: null,
 		questionQueue: null,
 		remoteQuestion: null,
@@ -2420,6 +2433,9 @@ export function useChat() {
 				case "files":
 					dispatch({ type: "files", files: msg });
 					break;
+				case "canvas_list_result":
+					window.dispatchEvent(new CustomEvent(CANVAS_LIST_EVENT, { detail: msg }));
+					break;
 				case "file_upload_result":
 					window.dispatchEvent(new CustomEvent("pi:file-upload-result", { detail: msg }));
 					break;
@@ -2663,13 +2679,15 @@ export function useChat() {
 							reason: msg.reason,
 							reasonEn: msg.reasonEn,
 							...(msg.category ? { category: msg.category } : {}),
+							...(msg.hits ? { hits: msg.hits } : {}),
+							...(msg.parentTool ? { parentTool: msg.parentTool } : {}),
 							...(msg.conversationId !== undefined ? { conversationId: msg.conversationId } : {}),
 							...(msg.conversationTitle !== undefined ? { conversationTitle: msg.conversationTitle } : {}),
 						},
 					});
 					break;
 				case "tool_approval_resolved":
-					dispatch({ type: "tool_approval", approval: null });
+					dispatch({ type: "tool_approval", approval: null, resolvedId: msg.id });
 					break;
 				case "question_retracted": {
 					if (chatApi.current.chat.remoteQuestion?.id === msg.id) {

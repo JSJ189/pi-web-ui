@@ -6,6 +6,7 @@ import { runtimeBaseCandidates } from "./dsh/preset-clones.js";
 import { killPidTree } from "./process-utils.js";
 import type { EngineStatus } from "./protocol.js";
 import { probeClaudeCode } from "./universal/drivers/claude-code.js";
+import { probeCodex } from "./universal/drivers/codex.js";
 import {
 	compareVersions,
 	defaultFetcher,
@@ -36,6 +37,11 @@ export const ENGINE_PACKAGES: Record<string, EnginePackageMeta> = {
 		id: "claude",
 		packageName: "@anthropic-ai/claude-code",
 		installCommand: "npm i -g @anthropic-ai/claude-code",
+	},
+	codex: {
+		id: "codex",
+		packageName: "@openai/codex",
+		installCommand: "npm i -g @openai/codex",
 	},
 	durable: {
 		id: "durable",
@@ -83,6 +89,14 @@ const engineRegistry = new Map<string, EngineEntry>([
 		"claude",
 		{
 			status: { id: "claude", installed: false, packageName: ENGINE_PACKAGES.claude.packageName },
+			probedAt: 0,
+			updating: false,
+		},
+	],
+	[
+		"codex",
+		{
+			status: { id: "codex", installed: false, packageName: ENGINE_PACKAGES.codex.packageName },
 			probedAt: 0,
 			updating: false,
 		},
@@ -158,12 +172,12 @@ export function probePi(): EngineStatus {
  * 1. 优先检查常见全局 node_modules / 候选路径中的 @deepseek-ai/dsh package.json 与 dsh-base；
  * 2. 回退通过命令行探针执行 `dsh --version`。
  */
-export async function probeDsh(): Promise<EngineStatus> {
+export async function probeDsh(force = false): Promise<EngineStatus> {
 	const pkgName = ENGINE_PACKAGES.dsh.packageName;
 
 	// 0. 通用全局包探测器（覆盖 fnm / nvm / pnpm / 全局 prefix 等）
 	try {
-		const globalProbe = probeGlobalPackage(pkgName);
+		const globalProbe = probeGlobalPackage(pkgName, { refresh: force });
 		if (globalProbe.installed) {
 			return { id: "dsh", installed: true, packageName: pkgName, version: globalProbe.version };
 		}
@@ -327,9 +341,17 @@ export async function probeEngine(id: string, force = false): Promise<EngineStat
 	}
 	let result: EngineStatus;
 	if (id === "dsh") {
-		result = await probeDsh();
+		result = await probeDsh(force);
 	} else if (id === "claude") {
 		result = await probeClaude(force);
+	} else if (id === "codex") {
+		const probe = await probeCodex();
+		result = {
+			id: "codex",
+			installed: probe.available,
+			version: probe.version,
+			packageName: ENGINE_PACKAGES.codex.packageName,
+		};
 	} else if (id === "durable") {
 		result = await probeDurable(force);
 	} else {
@@ -355,20 +377,27 @@ export async function probeAllEngines(force = false): Promise<EngineStatus[]> {
 	if (!force && allFresh && entries.length > 0) {
 		return entries.map(toPublicStatus);
 	}
-	const [pi, dsh, claude, durable] = await Promise.all([
+	const [pi, dsh, claude, durable, codex] = await Promise.all([
 		probePi(),
-		probeDsh(),
+		probeDsh(force),
 		probeClaude(force),
 		probeDurable(force),
+		probeCodex().then((probe): EngineStatus => ({
+			id: "codex",
+			installed: probe.available,
+			version: probe.version,
+			packageName: ENGINE_PACKAGES.codex.packageName,
+		})),
 	]);
 	await Promise.all([
 		enrichWithUpdateInfo(pi, force),
 		enrichWithUpdateInfo(dsh, force),
 		enrichWithUpdateInfo(claude, force),
 		enrichWithUpdateInfo(durable, force),
+		enrichWithUpdateInfo(codex, force),
 	]);
 	const timestamp = Date.now();
-	const results = [pi, dsh, claude, durable];
+	const results = [pi, dsh, claude, durable, codex];
 	for (const res of results) {
 		const existing = engineRegistry.get(res.id);
 		engineRegistry.set(res.id, {

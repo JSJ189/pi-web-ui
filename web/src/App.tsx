@@ -31,6 +31,9 @@ import { presetText } from "./components/DshPresetBar";
 const TerminalPanel = lazy(() => import("./components/TerminalPanel").then((m) => ({ default: m.TerminalPanel })));
 const ScmPanel = lazy(() => import("./components/SCMPanel").then((m) => ({ default: m.ScmPanel })));
 const DeviceCenter = lazy(() => import("./components/DeviceCenter").then((m) => ({ default: m.DeviceCenter })));
+const DeviceGroupCreateDialog = lazy(() =>
+	import("./components/DeviceGroups").then((m) => ({ default: m.DeviceGroupCreateDialog })),
+);
 const CanvasStudio = lazy(() => import("./components/canvas/CanvasStudio").then((m) => ({ default: m.CanvasStudio })));
 import { PluginView } from "./components/PluginView";
 import { PluginViewFallback } from "./components/PluginViewFallback";
@@ -166,7 +169,7 @@ export interface PendingAttachment {
 	 *  "reference"/"lines" = 工作区路径引用（文件内容不进 prompt）。
 	 *  "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）；粘贴图片 /
 	 *  上传文件没有 mode（path 为空，模式对它们无意义）。 */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote" | "canvas";
 	quote?: import("./types").TextQuote;
 	/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 	conversationId?: string;
@@ -452,10 +455,15 @@ export function App() {
 		new URLSearchParams(window.location.search).get("view") === "devices" ? "devices" : "chat",
 	);
 	const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+	const [deviceGroupCreateOpen, setDeviceGroupCreateOpen] = useState(false);
 	useEffect(() => {
 		const open = (event: Event) => {
 			const detail = (event as CustomEvent).detail;
 			if (!detail || typeof detail !== "object") return;
+			if (detail.create === true) {
+				setDeviceGroupCreateOpen(true);
+				return;
+			}
 			openDeviceGroup({
 				roomId: typeof detail.roomId === "string" ? detail.roomId : undefined,
 				create: detail.create === true,
@@ -1676,7 +1684,7 @@ export function App() {
 	const attach = (
 		path: string,
 		name: string,
-		mode: "inline" | "reference" | "lines" | "page",
+		mode: "inline" | "reference" | "lines" | "page" | "canvas",
 		isDir = false,
 		lines?: { start: number; end: number },
 		silent = false,
@@ -1695,7 +1703,7 @@ export function App() {
 		// 文件/目录类引用正文写相对路径而非 basename：同名条目（根目录 报告/ 与
 		// 方案/报告/）靠路径才能区分，linkify 也按相对路径渲染文件药丸；
 		// page 无文件路径语义，保持标题形式。
-		const mention = mode === "page" ? name : path;
+		const mention = mode === "page" || mode === "canvas" ? name : path;
 		if (!silent && mention) {
 			insertTextAtCursor(`@${mention} `);
 		}
@@ -1710,7 +1718,8 @@ export function App() {
 						? `conv|${a.conversationId ?? ""}|${a.sessionPath ?? ""}` === pathOrKey
 						: a.path === pathOrKey;
 				// 移除口径与 attach 插入一致：文件类提及正文是相对路径，page/conversation 是标题。
-				if (isHit && !removedName) removedName = a.mode === "page" || a.mode === "conversation" ? a.name : a.path;
+				if (isHit && !removedName)
+					removedName = a.mode === "page" || a.mode === "conversation" || a.mode === "canvas" ? a.name : a.path;
 				return !isHit;
 			}),
 		);
@@ -1973,11 +1982,13 @@ export function App() {
 						name: att.name,
 						mode: (att.type === "page"
 							? "page"
-							: att.type === "conversation"
-								? "conversation"
-								: att.lines
-									? "lines"
-									: "reference") as PromptAttachment["mode"],
+							: att.type === "canvas"
+								? "canvas"
+								: att.type === "conversation"
+									? "conversation"
+									: att.lines
+										? "lines"
+										: "reference") as PromptAttachment["mode"],
 						lines: att.lines,
 						key: randomUuid(),
 					}));
@@ -2016,7 +2027,7 @@ export function App() {
 		(a: {
 			path: string;
 			name: string;
-			mode?: "inline" | "reference" | "lines" | "page";
+			mode?: "inline" | "reference" | "lines" | "page" | "canvas";
 			isDir?: boolean;
 			lines?: { start: number; end: number };
 			silent?: boolean;
@@ -2757,6 +2768,11 @@ export function App() {
 										activeConversationId={activeConvId}
 										mode={chat.settings?.questionPresentation ?? "queue"}
 									/>
+									<ToolApprovalDialog
+										approvals={chat.approvals}
+										activeConversationId={activeConvId}
+										mode={chat.settings?.toolApprovalPresentation ?? "all"}
+									/>
 									{/* 任务执行看板 (Plan Mode) */}
 									<PlanBoard
 										plan={
@@ -3073,8 +3089,6 @@ export function App() {
 			<ToolInspectorModal />
 			{/* 会话回滚确认弹窗（Dual-State Rollback） */}
 			<RollbackDialog />
-			{/* 人机协同拦截与「改写执行」审批弹窗 */}
-			<ToolApprovalDialog approval={chat.approval} />
 			{/* TUI 扩展模态弹窗（ctx.ui.custom 虚拟终端桥） */}
 			{chat.tuiOverlay && (
 				<Suspense fallback={null}>
@@ -3161,6 +3175,11 @@ export function App() {
 						setPluginModelPicker(null);
 					}}
 				/>
+			)}
+			{deviceGroupCreateOpen && (
+				<Suspense fallback={null}>
+					<DeviceGroupCreateDialog onClose={() => setDeviceGroupCreateOpen(false)} />
+				</Suspense>
 			)}
 			{/* 插件能力授权 / 目录访问确认顶层浮层：必须高于设置等弹窗（z-index > 300），确保安装插件或跨视图调用时无需叉掉设置页 */}
 			{(pendingPermRequest || pendingPathRequest || pluginPathConfirm) && (

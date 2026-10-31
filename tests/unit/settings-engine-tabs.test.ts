@@ -23,12 +23,13 @@ describe("设置面板多引擎动态自适应（分区条件隐藏与模型中�
 	it("正确声明了 isClaude、isDsh 和 isPi 引擎分支判断", () => {
 		expect(SETTINGS_SRC).toContain('const isDsh = engine === "dsh";');
 		expect(SETTINGS_SRC).toContain('const isClaude = engine === "claude";');
-		expect(SETTINGS_SRC).toContain("const isPi = !isDsh && !isClaude;");
+		expect(SETTINGS_SRC).toContain('const isCodex = engine === "codex";');
+		expect(SETTINGS_SRC).toContain("const isPi = !isDsh && !isClaude && !isCodex;");
 	});
 
 	it("默认激活分区根据引擎自适应，避免切到不可见分区（Claude/DSH 默认进 models，Pi 默认进 prompt）", () => {
 		expect(SETTINGS_SRC).toContain(
-			'const defaultTab: SettingsTab = isClaude ? "models" : isDsh ? "models" : "prompt";',
+			'const defaultTab: SettingsTab = isClaude || isCodex || isDsh ? "models" : "prompt";',
 		);
 	});
 
@@ -58,7 +59,7 @@ describe("设置面板多引擎动态自适应（分区条件隐藏与模型中�
 		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isPi\s*\?\s*\[\s*\{\s*id:\s*"mcp"/);
 
 		// 目标审查：Claude 下隐藏
-		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isClaude\s*\?\s*\[\]\s*:\s*\[\s*\{\s*id:\s*"review"/);
+		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isClaude\s*\|\|\s*isCodex\s*\?\s*\[\]\s*:\s*\[\s*\{\s*id:\s*"review"/);
 
 		// 视觉桥：仅 isPi 可见
 		expect(SETTINGS_SRC).toMatch(/\.\.\.\(isPi\s*\?\s*\[\s*\{\s*id:\s*"vision"/);

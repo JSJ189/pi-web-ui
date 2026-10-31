@@ -1,5 +1,7 @@
-import { existsSync } from "node:fs";
-import { describe, expect, it } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
 	getCandidateNodeModulesRoots,
 	probeGlobalPackage,
@@ -20,6 +22,65 @@ describe("通用全局环境动态解析与穿透加载器（Universal Global Pa
 		for (const r of roots) {
 			expect(typeof r).toBe("string");
 			expect(r.length).toBeGreaterThan(0);
+		}
+	});
+
+	it.each(["node_modules", join("lib", "node_modules")])("发现没有 multishell 链接的 fnm 持久安装：%s", (suffix) => {
+		const dir = mkdtempSync(join(tmpdir(), "engine-fnm-"));
+		try {
+			vi.stubEnv("FNM_DIR", dir);
+			const root = join(dir, "node-versions", "v99.0.0", "installation", suffix);
+			const pkg = join(root, "@engine-probe-fixture", "installed");
+			mkdirSync(pkg, { recursive: true });
+			writeFileSync(
+				join(pkg, "package.json"),
+				JSON.stringify({ name: "@engine-probe-fixture/installed", version: "1.2.3", main: "index.js" }),
+			);
+			writeFileSync(join(pkg, "index.js"), "module.exports = {};");
+			expect(getCandidateNodeModulesRoots({ refresh: true })).toContain(root);
+			expect(probeGlobalPackage("@engine-probe-fixture/installed", { refresh: true })).toEqual({
+				installed: true,
+				version: "1.2.3",
+				packagePath: pkg,
+			});
+			expect(resolvePackageEntryFile("@engine-probe-fixture/installed")).toBe(join(pkg, "index.js"));
+		} finally {
+			vi.unstubAllEnvs();
+			rmSync(dir, { recursive: true, force: true });
+			getCandidateNodeModulesRoots({ refresh: true });
+		}
+	});
+
+	it("安装新的 fnm Node 版本后，候选缓存到期会自动发现引擎", () => {
+		const dir = mkdtempSync(join(tmpdir(), "engine-fnm-refresh-"));
+		try {
+			vi.stubEnv("FNM_DIR", dir);
+			expect(probeGlobalPackage("@engine-probe-fixture/new-install", { refresh: true }).installed).toBe(false);
+			const pkg = join(
+				dir,
+				"node-versions",
+				"v99.1.0",
+				"installation",
+				"node_modules",
+				"@engine-probe-fixture",
+				"new-install",
+			);
+			mkdirSync(pkg, { recursive: true });
+			writeFileSync(
+				join(pkg, "package.json"),
+				JSON.stringify({ name: "@engine-probe-fixture/new-install", version: "2.0.0" }),
+			);
+			vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6000);
+			expect(probeGlobalPackage("@engine-probe-fixture/new-install")).toEqual({
+				installed: true,
+				version: "2.0.0",
+				packagePath: pkg,
+			});
+		} finally {
+			vi.restoreAllMocks();
+			vi.unstubAllEnvs();
+			rmSync(dir, { recursive: true, force: true });
+			getCandidateNodeModulesRoots({ refresh: true });
 		}
 	});
 

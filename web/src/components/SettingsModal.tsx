@@ -148,7 +148,6 @@ import {
 	CORE_TOOL_CATALOG,
 	filterToolsByPreset,
 	presetShowsSkillCatalog,
-	SUBAGENT_TOOL_NAMES,
 	TERMINAL_TOOL_NAMES,
 } from "../../../server/tool-manager.js";
 
@@ -158,7 +157,13 @@ import {
  */
 const OTHER_AGENT_TOOLS = AGENT_TOOL_CATALOG.filter((e) => e.group === "other");
 // The legacy alias shares conversation's switch; keep other subagent tools visible.
-const CONVERSATION_TOOL_NAMES = [...new Set(SUBAGENT_TOOL_NAMES.map((n) => (n === "subagent" ? "conversation" : n)))];
+const CONVERSATION_TOOL_NAMES = [
+	...new Set(
+		AGENT_TOOL_CATALOG.filter((tool) => tool.group === "subagent").map((tool) =>
+			tool.name === "subagent" ? "conversation" : tool.name,
+		),
+	),
+];
 
 /** Minimal terminal-tab bridge (same shape SCMPanel uses). */
 interface SettingsTerminalBridge {
@@ -651,6 +656,7 @@ interface SettingsPatch {
 	editSoftEnabled?: boolean;
 	questionnaireEnabled?: boolean;
 	questionPresentation?: "queue" | "all" | "manual";
+	toolApprovalPresentation?: "queue" | "all" | "manual";
 	questionTimeoutSeconds?: number;
 	goalModeEnabled?: boolean;
 	parallelReminderEnabled?: boolean;
@@ -768,9 +774,10 @@ export function SettingsModal({
 	// 引擎特性分支判断：动态适应引擎，隐藏不可用的分区
 	const isDsh = engine === "dsh";
 	const isClaude = engine === "claude";
-	const isPi = !isDsh && !isClaude;
+	const isCodex = engine === "codex";
+	const isPi = !isDsh && !isClaude && !isCodex;
 	// 默认分区自适应：Claude/DSH 优先进模型与服务商，Pi 进系统提示词
-	const defaultTab: SettingsTab = isClaude ? "models" : isDsh ? "models" : "prompt";
+	const defaultTab: SettingsTab = isClaude || isCodex || isDsh ? "models" : "prompt";
 	const [tab, setTab] = useState<SettingsTab>(initialSection ?? defaultTab);
 	// 界面插件分组内的子页签：市场 / 已安装（一次只看一坨，免得 5 大块堆在一起滚半天；默认进市场，安装一步直达）。
 	const [pluginSub, setPluginSub] = useState<"market" | "installed">("market");
@@ -1380,7 +1387,7 @@ export function SettingsModal({
 		// 界面布局（全引擎通用）
 		{ id: "layout", icon: <FiSliders />, label: t("uiLayoutTitle") },
 		// 目标审查（仅 Pi 与 DSH 支持）
-		...(isClaude
+		...(isClaude || isCodex
 			? []
 			: [{ id: "review" as const, icon: <FiZap />, label: t("settingsReview"), count: settings.reviewSkills.length }]),
 		// 视觉桥（仅 Pi 引擎支持）
@@ -1683,6 +1690,12 @@ export function SettingsModal({
 	// 子代理各工具的「?」说明（key 与 tool-manager.ts 的 SUBAGENT_TOOL_NAMES 对齐）。
 	const SUBAGENT_TOOL_TIPS: Record<string, string> = {
 		conversation: t("toolDescSubagent"),
+		...Object.fromEntries(
+			AGENT_TOOL_CATALOG.filter((tool) => tool.group === "subagent" && tool.descKey).map((tool) => [
+				tool.name,
+				`${t(tool.descKey as any)}${tool.offHintKey ? `\n${t(tool.offHintKey as any)}` : ""}`,
+			]),
+		),
 		subagent_spawn: t("toolDescSubagentSpawn"),
 		subagent_get_result: t("toolDescSubagentGetResult"),
 		subagent_steer: t("toolDescSubagentSteer"),
@@ -2471,7 +2484,13 @@ export function SettingsModal({
 									<HintTip text={t("settingsModelsDesc")} />
 								</div>
 								<p className="set-desc" style={{ marginTop: 4, marginBottom: 12 }}>
-									{isClaude ? t("engineClaudeModelDesc") : isDsh ? t("engineDshModelDesc") : t("enginePiModelDesc")}
+									{isCodex
+										? t("engineCodexModelDesc")
+										: isClaude
+											? t("engineClaudeModelDesc")
+											: isDsh
+												? t("engineDshModelDesc")
+												: t("enginePiModelDesc")}
 								</p>
 
 								{onOpenManageModels && (
@@ -3901,6 +3920,19 @@ export function SettingsModal({
 									>
 										<option value="queue">{t("questionPresentationQueue")}</option>
 										<option value="all">{t("questionPresentationAll")}</option>
+										<option value="manual">{t("questionPresentationManual")}</option>
+									</select>
+								</FieldRow>
+								<FieldRow label={t("toolApprovalPresentation")} tip={t("toolApprovalPresentationDesc")}>
+									<select
+										className="set-input"
+										value={settings.toolApprovalPresentation ?? "all"}
+										onChange={(e) =>
+											setPartial({ toolApprovalPresentation: e.target.value as "queue" | "all" | "manual" })
+										}
+									>
+										<option value="queue">{t("questionPresentationQueue")}</option>
+										<option value="all">{t("toolApprovalPresentationAll")}</option>
 										<option value="manual">{t("questionPresentationManual")}</option>
 									</select>
 								</FieldRow>

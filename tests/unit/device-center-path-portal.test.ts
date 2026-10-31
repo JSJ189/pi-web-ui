@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import http, { type Server } from "node:http";
 import { once } from "node:events";
+import { gzipSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import { chromium } from "playwright-core";
 import { createDeviceRelay } from "../../server/device-center/relay.js";
@@ -31,7 +32,7 @@ async function fixture() {
 	const received: http.IncomingHttpHeaders[] = [];
 	const local = http.createServer((req, res) => {
 		received.push(req.headers);
-		if (req.url === "/") {
+		if (req.url?.split("?")[0] === "/") {
 			res.writeHead(200, {
 				"content-type": "text/html",
 				"set-cookie": "device=bad; Path=/",
@@ -43,6 +44,16 @@ async function fixture() {
 			res.end(
 				'<html><head><base href="/evil/"><link rel="stylesheet" href="/style.css"></head><body><script type="module" src="/assets/app.js"></script></body></html>',
 			);
+		} else if (req.url === "/assets/large.bin") {
+			res.setHeader("content-type", "application/octet-stream");
+			res.end(Buffer.alloc(8 * 1024 * 1024, 120));
+		} else if (req.url === "/assets/compressed.js") {
+			res.setHeader("content-type", "text/javascript");
+			const body = "export const compressed = true;";
+			if (req.headers["accept-encoding"]?.includes("gzip")) {
+				res.setHeader("content-encoding", "gzip");
+				res.end(gzipSync(body));
+			} else res.end(body);
 		} else if (req.url === "/assets/app.js") {
 			res.setHeader("content-type", "text/javascript");
 			res.end(`import { value } from './chunk.js';
@@ -140,6 +151,52 @@ describe("single-port device path portal", () => {
 		expect((await f.request(ticketPath)).status).toBe(403);
 		expect((await f.request("/device/dev1/", { cookie: "hub=secret", origin: "null" })).status).toBe(401);
 	});
+	it("serves minimal account binding for current and older remote device UIs", async () => {
+		const f = await fixture();
+		const { base } = await f.open();
+		const before = f.received.length;
+		for (const route of ["chat-status", "status"]) {
+			const response = await f.request(base + "api/device-center/" + route, { origin: "null" });
+			expect(response.status).toBe(200);
+			expect(JSON.parse(response.body)).toEqual({ hubUrl: f.origin, deviceId: "dev1" });
+			expect(response.headers.get("access-control-allow-origin")).toBe("null");
+		}
+		expect(f.received.length).toBe(before);
+	});
+	it("exposes policy rejection status to authenticated sandbox requests only", async () => {
+		const f = await fixture();
+		const { base } = await f.open();
+		const denied = await f.request(base + "api/device-center/config", { origin: "null" });
+		expect(denied.status).toBe(400);
+		expect(denied.headers.get("access-control-allow-origin")).toBe("null");
+		expect(denied.headers.get("access-control-allow-credentials")).toBeNull();
+		const invalid = await f.request(base + "api/device-center/config", { origin: f.origin });
+		expect(invalid.status).toBe(403);
+		expect(invalid.headers.get("access-control-allow-origin")).toBeNull();
+	});
+	it("streams resources larger than the relay queue without dropping the device", async () => {
+		const f = await fixture();
+		const { base } = await f.open();
+		const asset = await f.request(base + "assets/large.bin", { origin: "null" });
+		expect(asset.status).toBe(200);
+		expect(asset.body.length).toBe(8 * 1024 * 1024);
+		expect(asset.body).toBe("x".repeat(8 * 1024 * 1024));
+		expect(f.relay.isOnline("dev1")).toBe(true);
+	});
+	it("preserves asset compression while requesting identity only for rewritten entry HTML", async () => {
+		const f = await fixture();
+		const { base } = await f.open();
+		const headers = { origin: "null", "accept-encoding": "gzip" };
+		const entry = await f.request(base + "?first=1", headers);
+		expect(entry.status).toBe(200);
+		expect(entry.body).toContain(`<base href="${base}">`);
+		expect(f.received.at(-1)?.["accept-encoding"]).toBe("identity");
+		const asset = await f.request(base + "assets/compressed.js", headers);
+		expect(asset.status).toBe(200);
+		expect(asset.headers.get("content-encoding")).toBe("gzip");
+		expect(asset.body).toBe("export const compressed = true;");
+		expect(f.received.at(-1)?.["accept-encoding"]).toBe("gzip");
+	});
 	it("binds capability to device, expiration and revocation, stripping Hub credentials", async () => {
 		const f = await fixture();
 		const { base } = await f.open();
@@ -232,6 +289,15 @@ describe("single-port device path portal", () => {
 		});
 		const result = JSON.parse((await frame.locator("body").textContent())!);
 		expect(result).toEqual({ module: "loaded", opaque: true, fetch: true, ws: true, hubBlocked: true });
+		await frame.evaluate(() => {
+			document.body.innerHTML = '<div id="root"><span class="status-conn">Connecting</span></div>';
+		});
+		await expect.poll(() => page.locator("#loading").isHidden()).toBe(true);
+		await expect.poll(() => frame.getByRole("status").isVisible()).toBe(true);
+		await frame.evaluate(() => document.querySelector(".status-conn")!.classList.add("ok"));
+		await expect.poll(() => frame.getByRole("status").isHidden()).toBe(true);
+		await frame.evaluate(() => document.querySelector(".status-conn")!.classList.remove("ok"));
+		await expect.poll(() => frame.getByRole("status").isVisible()).toBe(true);
 		expect(f.hubHits()).toBe(0);
 		await expect.poll(() => page.url()).toContain("#s=synced");
 		expect(frame.url()).toContain("#s=initial");

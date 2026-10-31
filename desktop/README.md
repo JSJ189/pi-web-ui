@@ -6,6 +6,14 @@
 - [启动参数](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#cli-and-env) · [本地 /setup 配置指南](https://xing-shuyin.github.io/pi-web-ui-site/docs.html#setup-page)
 - [下载最新 Release](https://github.com/xing-shuyin/pi-web-ui/releases/latest)
 
+## 设备中心集成浏览器
+
+桌面端点击“打开中心”，会打开独立的设备中心窗口，用于登录、创建账号及确认配对。主窗口继续轮询配对结果，确认后自动完成绑定；无需依赖系统浏览器的新标签。相同中心重复打开会复用窗口，窗口菜单提供前进、后退、刷新和返回中心首页。
+
+每个中心 origin 使用独立的持久化 Electron session 保存登录状态，与本地应用及其他中心隔离。远程窗口无 preload、无 Node 权限、启用 sandbox，不允许跨 origin 导航和浏览器权限申请，不忽略证书错误。窗口标题始终显示实际中心地址。普通网页版仍使用浏览器原生新标签。
+
+此能力需要更新并重启桌面壳，仅更新 Web 静态资源不能增加 preload/IPC 能力。旧版桌面壳继续使用原有外链方式。打开失败时页面保留中心地址供手动访问，主窗口配对等待状态不受影响。
+
 ## 选择与运行
 
 | 形式                                            | 适用场景                 | 安装和启动                                                                                                  |

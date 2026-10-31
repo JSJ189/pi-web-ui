@@ -39,6 +39,7 @@ describe("question queue settings", () => {
 	it("defaults to current-conversation popups and a four-minute child deadline", () => {
 		const { service } = setup();
 		expect(service.current.questionPresentation).toBe("queue");
+		expect(service.current.toolApprovalPresentation).toBe("all");
 		expect(service.current.questionTimeoutSeconds).toBe(240);
 	});
 	it("persists manual mode and explicit unlimited waiting", async () => {
@@ -47,6 +48,17 @@ describe("question queue settings", () => {
 		const restored = new SettingsService(host, { list: () => [] } as unknown as SubagentTemplatesStore);
 		expect(restored.current.questionPresentation).toBe("manual");
 		expect(restored.current.questionTimeoutSeconds).toBe(0);
+	});
+	it("persists approval reminders independently and rejects invalid modes", async () => {
+		const { service, host } = setup();
+		for (const mode of ["queue", "manual", "all"] as const) {
+			await service.set({ toolApprovalPresentation: mode, questionPresentation: "manual" });
+			const restored = new SettingsService(host, { list: () => [] } as unknown as SubagentTemplatesStore);
+			expect(restored.current.toolApprovalPresentation).toBe(mode);
+			expect(restored.current.questionPresentation).toBe("manual");
+		}
+		await expect(service.set({ toolApprovalPresentation: "invalid" as any })).rejects.toThrow();
+		expect(service.current.toolApprovalPresentation).toBe("all");
 	});
 	it("rejects invalid deadlines without changing the current setting", async () => {
 		const { service } = setup();
@@ -63,5 +75,11 @@ describe("question queue settings", () => {
 			expect(sanitizePresetSettings({ questionTimeoutSeconds: value }).rejected).toContain("questionTimeoutSeconds");
 		expect(sanitizePresetSettings({ questionPresentation: "surprise" }).rejected).toContain("questionPresentation");
 		expect(sanitizePresetSettings({}).settings).not.toHaveProperty("questionTimeoutSeconds");
+		for (const mode of ["queue", "all", "manual"])
+			expect(sanitizePresetSettings({ toolApprovalPresentation: mode }).settings.toolApprovalPresentation).toBe(mode);
+		expect(sanitizePresetSettings({ toolApprovalPresentation: "invalid" }).rejected).toContain(
+			"toolApprovalPresentation",
+		);
+		expect(sanitizePresetSettings({}).settings).not.toHaveProperty("toolApprovalPresentation");
 	});
 });

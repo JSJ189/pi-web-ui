@@ -594,6 +594,7 @@ export function CanvasNodeCard({
 								<option value="pi">Pi 原生</option>
 								<option value="dsh">DSH 极速</option>
 								<option value="claude">Claude Code</option>
+								<option value="codex">Codex</option>
 								<option value="durable">Durable 自愈</option>
 							</select>
 						</div>

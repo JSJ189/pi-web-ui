@@ -12,6 +12,7 @@
  *     静默显示成别的项，用户一保存就把配置“吃掉”了。
  */
 import { THINKING_VALUES } from "./thinking-levels";
+import type { UiSelectOption } from "./types";
 
 /** 模型清单条目（UiVisionBridgeModel 的最小结构；设置面板的模型选择器用同一份数据）。 */
 export interface PluginSelectModel {
@@ -22,7 +23,7 @@ export interface PluginSelectModel {
 
 /** 计算一个 select 字段要渲染的全部候选项（顺序 = 空值 → 静态 → 动态 → 当前值）。 */
 export function pluginSelectValues(
-	field: { options?: string[]; optionsFrom?: "models" | "thinkingLevels" },
+	field: { options?: (string | UiSelectOption)[]; optionsFrom?: "models" | "thinkingLevels" },
 	models: readonly PluginSelectModel[] = [],
 	current?: unknown,
 ): string[] {
@@ -31,7 +32,10 @@ export function pluginSelectValues(
 		if (!out.includes(v)) out.push(v);
 	};
 	if (field.optionsFrom) push("");
-	for (const o of field.options ?? []) push(o);
+	for (const o of field.options ?? []) {
+		const val = typeof o === "string" ? o : o.value;
+		push(val);
+	}
 	if (field.optionsFrom === "models") {
 		for (const m of models) push(`${m.provider}/${m.id}`);
 	} else if (field.optionsFrom === "thinkingLevels") {

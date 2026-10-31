@@ -57,12 +57,24 @@ async function request(path: string, signal: AbortSignal, body?: object) {
 }
 export function LocalBots({
 	pathCompletions = [],
+	createOnly = false,
+	onCreated,
+	onCancel,
 }: {
 	pathCompletions?: { name: string; path: string; type: "dir" | "file" }[];
+	createOnly?: boolean;
+	onCreated?: (bot: Bot, synced: boolean) => void;
+	onCancel?: () => void;
 }) {
 	const t = useT();
 	const [bots, setBots] = useState<Bot[]>([]);
-	const [draft, setDraft] = useState<(ReturnType<typeof blank> & Partial<Pick<Bot, "id" | "revision">>) | null>(null);
+	const [draft, setDraft] = useState<(ReturnType<typeof blank> & Partial<Pick<Bot, "id" | "revision">>) | null>(() =>
+		createOnly ? blank() : null,
+	);
+	const closeDraft = () => {
+		setDraft(null);
+		onCancel?.();
+	};
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState("");
 	const [notice, setNotice] = useState("");
@@ -162,6 +174,7 @@ export function LocalBots({
 			setDraft(null);
 			setModelOpen(false);
 			setNotice(data.synced === false ? t("localBotSyncFailed") : t("localBotSaved"));
+			if (!remove) onCreated?.(data.bot, data.synced !== false);
 		} catch (cause) {
 			if (!current.signal.aborted) setError(cause instanceof Error ? cause.message : String(cause));
 		} finally {
@@ -172,7 +185,7 @@ export function LocalBots({
 		(model) => model.provider === draft?.model?.provider && modelId(model) === draft?.model?.modelId,
 	);
 	return (
-		<section className="dc-card dc-bots" aria-label={t("localBotTitle")}>
+		<section className={`dc-card dc-bots${createOnly ? " is-create-only" : ""}`} aria-label={t("localBotTitle")}>
 			<div className="dg-heading">
 				<h2>{t("localBotTitle")}</h2>
 				<button
@@ -224,7 +237,7 @@ export function LocalBots({
 						aria-label={t("localBotTitle")}
 						onCancel={(event) => {
 							event.preventDefault();
-							if (!busy && !modelOpen) setDraft(null);
+							if (!busy && !modelOpen) closeDraft();
 						}}
 						onClick={(event) => {
 							if (event.target !== event.currentTarget || busy) return;
@@ -235,7 +248,7 @@ export function LocalBots({
 								event.clientY < bounds.top ||
 								event.clientY > bounds.bottom
 							)
-								setDraft(null);
+								closeDraft();
 						}}
 					>
 						<form
@@ -272,7 +285,7 @@ export function LocalBots({
 									type="button"
 									aria-label={t("localBotCancel")}
 									disabled={busy}
-									onClick={() => setDraft(null)}
+									onClick={closeDraft}
 								>
 									×
 								</button>
@@ -457,7 +470,7 @@ export function LocalBots({
 									type="button"
 									disabled={busy}
 									onClick={() => {
-										setDraft(null);
+										closeDraft();
 										setModelOpen(false);
 									}}
 								>

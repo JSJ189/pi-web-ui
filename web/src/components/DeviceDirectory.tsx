@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FiExternalLink, FiMonitor, FiRefreshCw } from "react-icons/fi";
 import { appUrl } from "../base-url";
+import { openDeviceAccess } from "../device-access";
 import { withToken } from "../auth-token";
 import { isZhLocale, useI18n } from "../i18n";
 
@@ -65,45 +66,10 @@ export function DeviceDirectory({ hubUrl, currentDeviceId }: { hubUrl: string; c
 	}
 	async function openDevice(event: React.MouseEvent<HTMLAnchorElement>, id: string, desktop = false) {
 		event.preventDefault();
-		const tab = window.open("about:blank", "_blank");
-		if (!tab) {
-			setError(zh ? "请允许弹出窗口后重试。" : "Allow popups and try again.");
-			return;
-		}
-		tab.opener = null;
 		try {
-			const response = await fetch(withToken(appUrl(`/api/device-center/devices/${encodeURIComponent(id)}/open`)), {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: "{}",
-				credentials: "same-origin",
-				signal: AbortSignal.timeout(15000),
-			});
-			if (!response.ok)
-				throw new Error(
-					zh
-						? "无法打开设备，请确认设备在线且本机绑定有效。"
-						: "Could not open the device. Check connectivity and local pairing.",
-				);
-			const data = await response.json();
-			const url = new URL(data.url);
-			if (
-				!["http:", "https:"].includes(url.protocol) ||
-				url.hostname !== new URL(hubUrl).hostname ||
-				url.username ||
-				url.password ||
-				!(
-					url.pathname === "/__device/open" ||
-					(url.origin === new URL(hubUrl).origin && url.pathname === `/device/${encodeURIComponent(id)}/__open`)
-				)
-			)
-				throw new Error("Invalid device access URL");
-			url.searchParams.delete("next");
-			if (desktop) url.searchParams.set("next", "/desktop");
-			tab.location.replace(url.href);
+			await openDeviceAccess(id, hubUrl, desktop, zh);
 			setError("");
 		} catch (cause) {
-			tab.close();
 			setError(cause instanceof Error ? cause.message : String(cause));
 		}
 	}

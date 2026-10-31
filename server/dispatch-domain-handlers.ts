@@ -698,6 +698,7 @@ export function handleSettingsMessage(
 				editSoftEnabled: (msg as { editSoftEnabled?: boolean }).editSoftEnabled,
 				questionnaireEnabled: (msg as { questionnaireEnabled?: boolean }).questionnaireEnabled,
 				questionPresentation: msg.questionPresentation,
+				toolApprovalPresentation: msg.toolApprovalPresentation,
 				questionTimeoutSeconds: msg.questionTimeoutSeconds,
 				parallelReminderEnabled: (msg as { parallelReminderEnabled?: boolean }).parallelReminderEnabled,
 				goalModeEnabled: (msg as { goalModeEnabled?: boolean }).goalModeEnabled,

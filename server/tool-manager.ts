@@ -153,7 +153,8 @@ export const AGENT_TOOL_CATALOG: AgentToolEntry[] = [
 		group: "subagent",
 		defaultOn: true,
 		dshVisible: false,
-		descKey: "Read your inbox, send messages, request decisions, reply, or escalate between execution conversations.",
+		descKey: "communicateEnabledDesc",
+		offHintKey: "communicateOffHint",
 	},
 	{
 		name: EDIT_SOFT_TOOL_NAME,

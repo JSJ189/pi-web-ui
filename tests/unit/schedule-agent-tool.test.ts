@@ -129,6 +129,53 @@ describe("schedule 工具闭环（单 action：create/list/cancel）", () => {
 		expect(tasks[0]!.cwd).toBe(dir);
 	});
 
+	it("graphId 创建单次画布任务，空 prompt 使用图输入且不绑定对话", async () => {
+		host.conversationInfo = () => ({ cwd: "/other-project", sessionFile: "/conversation" });
+		const r = await call({ action: "create", schedule: "in 30m", graphId: "graph-1" });
+		expect(resultText(r)).toContain("目标：画布 graph-1");
+		expect(resultText(r)).toContain("图自带输入");
+		expect(store.list()[0]).toMatchObject({
+			target: "canvas",
+			graphId: "graph-1",
+			cwd: dir,
+			prompt: "",
+			conversationId: "",
+			sessionFile: "",
+			oneShot: true,
+		});
+		expect(resultText(await call({ action: "list" }))).toContain("画布→graph-1");
+	});
+
+	it("周期画布支持输入覆盖、英文目标回执和列表", async () => {
+		tool = makeScheduleTool(host, "c7", () => "en");
+		const r = await call({
+			action: "create",
+			schedule: "0 * * * *",
+			graphId: "graph-1",
+			prompt: "canvas input",
+			recurring: true,
+		});
+		expect(resultText(r)).toContain("Target: canvas graph-1");
+		expect(resultText(r)).toContain("supplied instruction");
+		expect(store.list()[0]).toMatchObject({ oneShot: false, prompt: "canvas input" });
+		expect(resultText(await call({ action: "list" }))).toContain("canvas→graph-1");
+	});
+
+	it("空或非法画布 id 和不存在的工程都不能创建任务", async () => {
+		for (const graphId of ["", "../escape"]) {
+			expect(resultText(await call({ action: "create", schedule: "in 30m", graphId }))).toContain("画布工程 id");
+		}
+		store = new SchedulerStore(dir, {
+			validateTask: () => {
+				throw new Error("Canvas graph not found");
+			},
+		});
+		expect(resultText(await call({ action: "create", schedule: "in 30m", graphId: "missing" }))).toContain(
+			"Canvas graph not found",
+		);
+		expect(store.list()).toEqual([]);
+	});
+
 	it("recurring=true 建周期 cron 任务", async () => {
 		const r = await call({
 			action: "create",

@@ -42,7 +42,7 @@ export function formatQuotedPrompt(text: string, quotes: readonly TextQuote[]): 
 }
 
 export interface QueuedAttachmentMeta {
-	type: "file" | "folder" | "page" | "conversation" | "image" | "vision-bridge";
+	type: "file" | "folder" | "page" | "conversation" | "image" | "vision-bridge" | "canvas";
 	name: string;
 	path?: string;
 	url?: string;
@@ -217,6 +217,17 @@ export function splitQuotedPrompt(value: string): ParsedQuotedPrompt {
 			return "";
 		},
 	);
+
+	text = text.replace(/(?:^|\n\n)?<canvas-ref id="([^"]*)" title="([^"]*)">[\s\S]*?<\/canvas-ref>/g, (_, id, title) => {
+		const decode = (s: string) =>
+			s
+				.replace(/&quot;/g, '"')
+				.replace(/&lt;/g, "<")
+				.replace(/&gt;/g, ">")
+				.replace(/&amp;/g, "&");
+		attachments.push({ type: "canvas", path: decode(id), name: decode(title) || decode(id) });
+		return "";
+	});
 
 	text = text.replace(/(?:^|\n\n)?<vision-bridge>[\s\S]*?<\/vision-bridge>/g, () => {
 		attachments.push({ type: "vision-bridge", name: "视觉转写" });

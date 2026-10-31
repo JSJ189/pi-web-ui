@@ -15,7 +15,10 @@ import { uploadLimitBytes, isUploadDataTooLong } from "./payload-limits.js";
 import { formatTextQuote, readTextQuote } from "./text-quote.js";
 import type { ServerLang } from "./i18n.js";
 import { sniffImageMime } from "./text-sniff.js";
-import { saveUpload, uploadsRoot } from "./uploads.js";
+import { resolveDataDir, saveUpload, uploadsRoot } from "./uploads.js";
+import { isSafeGraphId, loadCanvasGraph } from "./canvas/canvas-store.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { isAbsoluteWirePath, wireToAbs } from "./files-service.js";
 import { buildVisionBridgePrompt, findVisionModels, transcribeImages } from "./vision-bridge.js";
 import { saveAttachment } from "./attachment-store.js";
@@ -26,6 +29,17 @@ import {
 	parseRemoteWorkspaceUri,
 	resolveRemoteWorkspacePath,
 } from "./remote-ssh-service.js";
+
+/** Resolve reference metadata without creating the store's implicit default graph. */
+export function getCanvasReference(graphId: string): { id: string; title: string } {
+	const dataDir = resolveDataDir();
+	if (!isSafeGraphId(graphId) || !existsSync(join(dataDir, "canvas", `${graphId}.json`))) {
+		throw new Error("Invalid or missing canvas reference");
+	}
+	const graph = loadCanvasGraph(dataDir, graphId);
+	if (graph.id !== graphId) throw new Error("Canvas graph id mismatch");
+	return { id: graphId, title: graph.name || graphId };
+}
 
 /** 跨快照的视觉转写缓存：批次 hash（名称 + base64 头 + 提示词）→ 转写文本。
  *  编辑重问重发相同图片不再重复耗视觉 token。进程级共享即可。
@@ -193,7 +207,7 @@ export async function buildAttachmentMessages(
 			}
 			continue;
 		}
-		if (att.fileData || !att.path) continue;
+		if (att.mode === "canvas" || att.fileData || !att.path) continue;
 		const ext = extname(att.path).toLowerCase();
 		if (!IMAGE_EXT.has(ext) || ext === ".svg") continue;
 		const target = resolveTarget(att.path);
@@ -392,6 +406,37 @@ export async function buildAttachmentMessages(
 					details: { name: title, path: id ?? sp, mode: "conversation", conversationId: id, sessionPath: sp },
 				},
 			});
+			continue;
+		}
+		// Canvas identifiers are not filesystem paths. Resolve only through the canvas store.
+		if (att.mode === "canvas") {
+			const graphId = att.path;
+			try {
+				const { title } = getCanvasReference(graphId);
+				out.push({
+					message: {
+						customType: "file",
+						content: [
+							{
+								type: "text",
+								text: `
+<canvas-ref id="${attr(graphId)}" title="${attr(title)}">
+The user referenced this canvas. First use canvas(action="get", graphId="${attr(graphId)}") to inspect its topology and status. Only when the user requests execution, use canvas(action="run_all", graphId="${attr(graphId)}", prompt="the user requirements"); prompt supplies the run initialPrompt. Use canvas(action="get_log", graphId="${attr(graphId)}") for logs, and action="get" for status. This reference alone does not authorize or start a run.
+</canvas-ref>`,
+							},
+						],
+						display: true,
+						details: { mode: "canvas", path: graphId, name: title, title },
+					},
+				});
+			} catch {
+				ctx.emit({
+					type: "notice",
+					level: "warning",
+					text: `画布引用无效或不存在，已跳过：${graphId}`,
+					textEn: `Invalid or missing canvas reference, skipped: ${graphId}`,
+				});
+			}
 			continue;
 		}
 		// Granted web page (page-picker extension): `path` is the page origin,

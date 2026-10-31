@@ -1,6 +1,6 @@
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { createServer } from "node:http";
+import { createServer, type Server } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { DeviceHubStore, hashSecret, isTerminal, publicDevice, secretMatches } from "./store.js";
@@ -23,6 +23,8 @@ export interface HubRelay {
 	onTask?: (deviceId: string, task: HubTask) => unknown;
 }
 export interface DeviceHubOptions {
+	/** An already bound loopback server may be supplied by the in-process local Hub. */
+	server?: Server;
 	dataDir: string;
 	publicUrl: string;
 	deviceDomain?: string;
@@ -800,7 +802,8 @@ export async function createDeviceHub(options: DeviceHubOptions) {
 			...(error.code === "ACTIVE_TASKS" ? { code: "ACTIVE_TASKS" } : {}),
 		});
 	});
-	const server = createServer((req, res) => {
+	const server = options.server ?? createServer();
+	server.on("request", (req, res) => {
 		if (options.relay?.handleRequest?.(req, res)) return;
 		app(req, res);
 	});

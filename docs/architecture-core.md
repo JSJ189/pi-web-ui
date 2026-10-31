@@ -71,7 +71,7 @@ pi 引擎的 `steeringMode` 与 `followUpMode` 默认均为 `all`：在各自交
 
 前端「向上分页」只做到**不渲染**，数据仍是全量到手：实测一份 287 条 / 17MB 的转录序列化后快照 4MB，打开对话要等整份传完 + parse。所以再把窗口挪到服务端：
 
-- **挂载点**：每连接唯一的发送漏斗（`server/index.ts` 的 `send` 外包一层 `MessageWindowTap`）。四个引擎（pi / DSH / claude / durable）都经这条漏斗，引擎侧**零改动**、口径统一；将来新引擎自动继承。
+- **挂载点**：每连接唯一的发送漏斗（`server/index.ts` 的 `send` 外包一层 `MessageWindowTap`）。五个引擎（pi / DSH / claude / codex / durable）都经这条漏斗，引擎侧**零改动**、口径统一；将来新引擎自动继承。
 - **裁剪**：`snapshot` 的 `state.messages` 裁成尾部窗口并回填 `historyStart`（窗口首条在全量里的下标）/ `historyTotal`；条数上限 `PI_WEB_HISTORY_WINDOW`（默认 300）+ **字符预算** 150 万字符（截图/tool 输出会把窗口压更短，实测同一份会话 4.00MB → 1.28MB）。`snapshot_delta` 只把新追加的并入缓存并回填两个计数。
 - **翻页**：`load_earlier_messages {count|all}` → 服务端回 `earlier_messages`（新增的更早一段，客户端**前插**）。窗口起点**单调不增**：客户端翻过的页不会被后续全量快照（重连 / `get_state`）推回去。
 - **不碰 `rev`/`baseRev`**：各引擎增量语义不同，改写版本号会破坏它们的自愈链；翻页只是补齐更早内容，与 rev 无关。
@@ -97,7 +97,7 @@ pi 引擎的 `steeringMode` 与 `followUpMode` 默认均为 `all`：在各自交
 
 标准 pi 引擎通过 `question_queue` 推送当前项目完整待答队列；每个请求保持稳定 ID、来源对话、顶层对话、持有方、创建时间及可选截止时间。顶层入口、来源对话与跨页面回答引用同一请求，回答按当前持有方结算，过户保留请求身份与期限。快照的 `pendingQuestion` 和即时 `question_pending` 保留其他引擎兼容；前端队列入口合并后只展示一个问卷。
 
-`questionPresentation` 控制当前对话弹出并排队其他问卷（默认 `queue`）、全部自动弹出（`all`）或仅手动队列（`manual`）。稍后回答保留问卷与草稿，取消为显式操作；来源跳转打开对应对话。当前项目以外的问卷不得进入队列。
+`questionPresentation` 控制当前对话弹出并排队其他问卷（默认 `queue`）、全部自动弹出（`all`）或仅手动队列（`manual`）。工具审批独立使用 `toolApprovalPresentation`，同样支持这三种方式，默认 `all` 保持所有对话的审批依次自动弹出；该设置只控制提醒，不改变审批开关、规则与批准/拒绝结果。稍后回答保留问卷与草稿，取消为显式操作；来源跳转打开对应对话。当前项目以外的问卷不得进入队列。
 
 子代理用 `conversation(action="consult")` 请示直接父对话；父对话通过 `answer` 作答或 `escalate` 交给用户。`ask_user_question` 始终等待用户，父代理不得代答。`wait_all` 遇到尚未交付给当前父对话的请示提前返回 `needs_input`，同一请求不反复唤醒。父代理不可处理时升级用户，已有自动唤醒预算继续生效。
 
@@ -138,6 +138,12 @@ pi 引擎的 `steeringMode` 与 `followUpMode` 默认均为 `all`：在各自交
 2. **快照引用必须稳定**：`getSnapshot()` 返回模块级 `cached`，只有 `setAppGlobals` 真正改了字段才替换对象并通知（数组按元素比、字段值相等则静默 return）—— 否则 `useSyncExternalStore` 会判定「快照每次都变」而无限重渲染。重连重放 `ready` 时靠这条不白刷一遍。
 
 回归：`tests/unit/app-globals.test.ts`（合并语义/同值不通知/退订/回落）与 `tests/unit/dsh-question-dialog.test.ts`（组件测试改用 `setAppSend` 注入 + 记录发出的消息）。
+
+## Codex CLI 引擎
+
+`codex` 通过 `server/universal/drivers/codex.ts` 接入通用底座，使用本机安装的 `@openai/codex` CLI。安装后先在终端运行 `codex login`；认证与服务商配置沿用 `~/.codex/`（或 `CODEX_HOME`），设置页的 Pi/Claude 服务商密钥不会注入 Codex。模型与推理强度按会话选择，默认模型跟随 CLI 配置。
+
+驱动将 `codex exec --json` 的线程、正文、思考、工具和用量事件转换为通用事件，线程 ID 随会话持久化以便续接。执行使用工作区写入沙盒，不绕过 Codex 的安全限制。Codex 不提供宿主工具审批、历史编辑或分叉；通用底座按能力声明隐藏这些入口。停止请求必须终止对应子进程并完成有界清理。
 
 ## 安全边界
 
@@ -224,6 +230,12 @@ pi 引擎的 `steeringMode` 与 `followUpMode` 默认均为 `all`：在各自交
 每个 `tool_execution_start` 都会为 toolCallId arm 一个看门狗 timer（**优先取设置面板「工具」页的 `ClientSettings.toolWatchdogTimeoutMs`**（分钟，0 = 禁用，逐 run 实时读取、无需 reload）；未设时回落环境变量 `PI_WEB_TOOL_TIMEOUT_MS`（毫秒），再回落默认 20 分钟）——超时仍在跑就 `session.abort()`（杀进程树）+ warning notice，`tool_execution_end` / `removeConversation` / `dispose` 都会清掉对应 timer。**若工具调用自己显式声明了更长的超时**（目前只有 bash 的 `args.timeout`，秒），看门狗自动顺延到 `max(基础值, 工具超时 + 5s)` —— 否则 AI 传 `timeout: 5400`（90 分钟）也会被 20 分钟的看门狗联同整轮对话一起剁掉。恢复重建 + 重绑会话（同一 conv 记录，UI 不掉线）；看门狗超时也走同一 `interruptRun`。**只停止运行，不碰后台服务**——那些由「后台任务」面板单独管理。回归：`tests/unit/tool-watchdog.test.ts`。
 
 **豁免 `ask_user_question`**：问卷阻塞等的是「人类回答」，不是挂死的工具——arm 前按工具名跳过（`tool_execution_start` 里 `event.toolName !== ASK_USER_QUESTION_TOOL_NAME`）。它的收场自有路子：用户回答/取消、会话 dispose（`cancelPendingQuestions`），**不限时**（标准 pi 引擎；DSH 引擎无此看门狗，提问走 `PI_WEB_DSH_QUESTION_TIMEOUT_MS` 自己的 10 分钟）。同理，问卷挂着也不算「失联」——stall 检查（`startStallTimer`，默认 180s 无 SDK 事件告警）对 `isWaitingOnUser(conv.id)` 的对话跳过。回归：`tests/question-bridge-test.mjs`（`PI_WEB_TOOL_TIMEOUT_MS=2000` 挂着不答超过阈值仍不终止）。
+
+### 审批队列与共享展示
+
+`UiState.pendingApprovals` 是当前连接持有的全部对话的权威待审批队列（含后台对话），按创建时间排序；完整快照与增量快照均携带，刷新或重连后可恢复。`pendingApproval` 保留单项兼容。即时 `tool_approval_pending` 按 ID 追加或更新，`tool_approval_resolved` 仅移除对应 ID，不能清空其他待办。答复仍通过服务端 `findPendingApproval` 按稳定 ID 定位原对话；允许同类/全部允许仍只作用于该对话。
+
+前端问卷和审批共用 `PendingQueue` 的列表、数量、等待时间、稳定选择、跳转和稍后处理逻辑，分别保留 `DshQuestionDialog` 与审批编辑面板。新请求和快照不能抢占已打开的请求；审批编辑器只随请求 ID 初始化，避免快照覆盖正在编辑的参数。稍后处理只暂缓展示，不产生审批答复；暂缓状态仅在本次页面生命周期保存。
 
 ### 审批三档放行与自定义规则库
 

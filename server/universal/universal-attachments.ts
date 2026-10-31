@@ -15,6 +15,13 @@ import type { PromptAttachment, UiMessage } from "../protocol.js";
 import { readSkillInstruction, type DiscoveredSkill } from "../skill-discovery.js";
 import { isRemoteWorkspaceUri } from "../remote-ssh-service.js";
 
+/** Canvas ids are not workspace paths; unsupported engines must say so. */
+export function formatUnavailableCanvasReference(att: PromptAttachment): string {
+	const escape = (s: string) =>
+		s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+	return `<canvas-ref id="${escape(att.path)}" title="${escape(att.name || att.path)}">Canvas tooling is unavailable in this engine. This is a graph identifier, not a file path; do not read it as a file or start a run.</canvas-ref>`;
+}
+
 export interface ScanResult {
 	detectedAttachments: PromptAttachment[];
 	detectedSkills: DiscoveredSkill[];
@@ -60,7 +67,13 @@ export function scanAtMentions(
 	let pm: RegExpExecArray | null;
 	const root = resolve(cwd);
 
-	while ((pm = pathRegex.exec(text)) !== null) {
+	let pathText = text;
+	for (const att of existingAttachments) {
+		if (att.mode !== "canvas" || !att.name) continue;
+		const escaped = att.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		pathText = pathText.replace(new RegExp(`(^|\\s)@${escaped}(?=$|\\s)`, "g"), "$1");
+	}
+	while ((pm = pathRegex.exec(pathText)) !== null) {
 		const rawCandidate = pm[1].trim();
 		if (!rawCandidate || rawCandidate.startsWith("skill:")) continue;
 
@@ -150,6 +163,17 @@ export function createAttachmentUiMessages(attachments: PromptAttachment[], time
 			continue;
 		}
 
+		if (att.mode === "canvas") {
+			out.push({
+				id: cardId,
+				role: "custom",
+				customType: "file",
+				timestamp,
+				content: [{ type: "text", text: formatUnavailableCanvasReference(att) }],
+				details: { mode: "canvas", path: att.path, name: att.name || att.path, title: att.name || att.path },
+			});
+			continue;
+		}
 		// 4. 工作区文件/目录/行范围
 		if (att.path) {
 			const isLines = att.mode === "lines" && att.lines;

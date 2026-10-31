@@ -9,8 +9,9 @@
  *   5. 工作区路径附件（reference / lines / 无 mode 的 auto / 旧版 inline）一律只给
  *      路径引用（内容不进 prompt）。
  */
-import { afterEach, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDefaultCanvasGraph, saveCanvasGraph } from "../../server/canvas/canvas-store.js";
+import { existsSync, mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildAttachmentMessages, type AttachmentContext } from "../../server/attachments.js";
@@ -18,12 +19,67 @@ import { saveUpload, uploadsRoot } from "../../server/uploads.js";
 import { setGlobalRemoteSshService } from "../../server/remote-ssh-service.js";
 
 const dirs: string[] = [];
+
+describe("canvas references", () => {
+	it("loads graph metadata, escapes the title, and instructs get before an explicit run", async () => {
+		const dataDir = tempDir();
+		const cwd = tempDir();
+		vi.stubEnv("PI_WEB_DATA_DIR", dataDir);
+		const graph = createDefaultCanvasGraph("pipeline.png");
+		graph.name = 'Build "UI" <safe> & test';
+		saveCanvasGraph(dataDir, graph);
+		// A same-named image must never reach the workspace-image prepass.
+		writeFileSync(join(cwd, graph.id), "WORKSPACE SECRET");
+		const notices: { level: string; text: string }[] = [];
+		const ctx = makeCtx({ dataDir, cwd, notices });
+		const out = (await buildAttachmentMessages(ctx, [
+			{ mode: "canvas", path: graph.id, name: "stale title" },
+		])) as Aside[];
+		expect(out).toHaveLength(1);
+		expect(out[0].message.details).toMatchObject({
+			mode: "canvas",
+			path: graph.id,
+			name: graph.name,
+			title: graph.name,
+		});
+		const text = out[0].message.content[0].text!;
+		expect(text).toContain('<canvas-ref id="pipeline.png" title="Build &quot;UI&quot; &lt;safe&gt; &amp; test">');
+		expect(text.indexOf('action="get"')).toBeLessThan(text.indexOf('action="run_all"'));
+		expect(text).toContain('action="get_log"');
+		expect(text).toContain("initialPrompt");
+		expect(text).toContain("does not authorize or start a run");
+		expect(text).not.toContain("WORKSPACE SECRET");
+		expect(notices).toEqual([]);
+	});
+
+	it.each(["missing", "default", "../escape", "", "corrupt", "mismatch"])(
+		"rejects invalid or missing graph %j without a file fallback",
+		async (id) => {
+			const dataDir = tempDir();
+			vi.stubEnv("PI_WEB_DATA_DIR", dataDir);
+			mkdirSync(join(dataDir, "canvas"));
+			writeFileSync(join(dataDir, "canvas", "corrupt.json"), "invalid JSON");
+			writeFileSync(join(dataDir, "canvas", "mismatch.json"), JSON.stringify({ id: "other" }));
+			const cwd = tempDir();
+			writeFileSync(join(cwd, "missing"), "WORKSPACE SECRET");
+			const notices: { level: string; text: string }[] = [];
+			expect(await buildAttachmentMessages(makeCtx({ dataDir, cwd, notices }), [{ mode: "canvas", path: id }])).toEqual(
+				[],
+			);
+			expect(existsSync(join(dataDir, "canvas", "default.json"))).toBe(false);
+			expect(notices).toHaveLength(1);
+			expect(notices[0].level).toBe("warning");
+		},
+	);
+});
+
 function tempDir(): string {
 	const dir = mkdtempSync(join(tmpdir(), "piweb-attach-test-"));
 	dirs.push(dir);
 	return dir;
 }
 afterEach(() => {
+	vi.unstubAllEnvs();
 	for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
@@ -32,6 +88,7 @@ interface Aside {
 		customType: string;
 		details: {
 			name?: string;
+			title?: string;
 			path?: string;
 			mode?: string;
 			size?: number;

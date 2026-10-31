@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatOptimisticQueuedPrompt } from "../../web/src/optimistic-queue.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -24,6 +25,15 @@ const sampleQuote: TextQuote = {
 };
 
 describe("排队消息附件处理与隔离 (queued-attachments)", () => {
+	it("round-trips canvas identity and escaped titles through queued prompts", () => {
+		const att = { mode: "canvas" as const, path: "build", name: 'Build "UI" & <test>' };
+		const queued = formatOptimisticQueuedPrompt("inspect", [att]);
+		expect(queued).not.toContain("<file");
+		expect(splitQuotedPrompt(queued)).toMatchObject({
+			text: "inspect",
+			attachments: [{ type: "canvas", path: att.path, name: att.name }],
+		});
+	});
 	it("formatStreamingPrompt 与 splitQuotedPrompt 往返解析：正文干净且提取所有附件元数据", () => {
 		const formatted = formatStreamingPrompt(
 			"请帮我分析这张图片和代码",

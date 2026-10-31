@@ -7,6 +7,7 @@ import { getLocalBotOptions, type BotCatalogSources } from "./bot-catalog.js";
 import { isIP } from "node:net";
 import { installHubSetupRoutes } from "./hub-setup.js";
 import { DeviceWorkspaceError } from "./workspaces.js";
+import { createLocalDeviceHub } from "./local-hub.js";
 import { createLocalBotRegistry, type LocalBotRegistry, type LocalBotInput } from "./bots.js";
 
 export interface LocalDeviceConfig {
@@ -80,6 +81,32 @@ export async function installLocalDeviceCenter(options: Options) {
 	const bots = options.bots ?? (await createLocalBotRegistry(options.dataDir));
 	let config: LocalDeviceConfig | undefined;
 	let connection: Connection | undefined;
+	let localHub: Awaited<ReturnType<typeof createLocalDeviceHub>> | undefined;
+	let localStarting: Promise<void> | undefined;
+	const activeConfig = () => config ?? localHub?.config;
+	async function ensureLocalHub() {
+		if (config || localHub || closed) return;
+		if (!localStarting) {
+			localStarting = (async () => {
+				const hub = await createLocalDeviceHub(options.dataDir);
+				try {
+					const { uiCredential: _uiCredential, ...agentConfig } = hub.config;
+					localHub = hub;
+					connection = await options.connect(agentConfig, syncBots);
+					await syncBots();
+				} catch (error) {
+					await connection?.close();
+					connection = undefined;
+					localHub = undefined;
+					await hub.close();
+					throw error;
+				}
+			})().finally(() => {
+				localStarting = undefined;
+			});
+		}
+		await localStarting;
+	}
 	let pending: { hubUrl: string; name: string; pollToken: string; expiresAt: number; generation: number } | undefined;
 	let generation = 0;
 	let closed = false;
@@ -100,8 +127,11 @@ export async function installLocalDeviceCenter(options: Options) {
 		}
 	}
 	async function reconnect() {
+		await localStarting;
 		await connection?.close();
 		connection = undefined;
+		await localHub?.close();
+		localHub = undefined;
 		await bots.setScope(config ? JSON.stringify([config.hubUrl, config.deviceId]) : "unpaired");
 		if (config && !closed) {
 			const { uiCredential: _uiCredential, ...agentConfig } = config;
@@ -109,7 +139,7 @@ export async function installLocalDeviceCenter(options: Options) {
 		}
 	}
 	async function syncBots() {
-		const captured = config;
+		const captured = activeConfig();
 		if (!captured || closed) return;
 		const response = await fetch(`${captured.hubUrl}/api/agent/bots`, {
 			method: "PUT",
@@ -129,7 +159,7 @@ export async function installLocalDeviceCenter(options: Options) {
 		await response.body?.cancel();
 		if (!response.ok)
 			throw new Error("Bot configuration saved locally, but Hub synchronization failed; retry after reconnecting");
-		if (config !== captured || closed) throw new Error("Device binding changed during Bot synchronization");
+		if (activeConfig() !== captured || closed) throw new Error("Device binding changed during Bot synchronization");
 	}
 	async function hubRequest(hubUrl: string, path: string, body: unknown) {
 		const response = await fetch(`${hubUrl}${path}`, {
@@ -192,11 +222,26 @@ export async function installLocalDeviceCenter(options: Options) {
 			connected: connection?.isConnected?.() ?? false,
 		});
 	});
+	// Account chat discovery is safe to relay; local settings remain device-only.
+	options.app.get("/api/device-center/chat-status", async (_req, res) => {
+		try {
+			await serialize(ensureLocalHub);
+			const current = activeConfig();
+			res.json({ hubUrl: current?.hubUrl, deviceId: current?.deviceId, ...(!config ? { local: true } : {}) });
+		} catch {
+			res.status(503).json({ code: "LOCAL_HUB_UNAVAILABLE", error: "Local collaboration could not start" });
+		}
+	});
 	const activeRequests = new Set<AbortController>();
 	let inFlight = 0;
 	function userRoute(method: "get" | "post", path: string, fields: string[]) {
 		options.app[method](`/api/device-center/${path}`, async (req, res) => {
-			const captured = config;
+			try {
+				await serialize(ensureLocalHub);
+			} catch {
+				return res.status(503).json({ code: "LOCAL_HUB_UNAVAILABLE", error: "Local collaboration could not start" });
+			}
+			const captured = activeConfig();
 			const capturedGeneration = generation;
 			if (!captured) return res.status(409).json({ code: "NOT_PAIRED", error: "Pair this computer first" });
 			if (!captured.uiCredential)
@@ -250,7 +295,7 @@ export async function installLocalDeviceCenter(options: Options) {
 				} finally {
 					await reader.cancel();
 				}
-				if (closed || config !== captured || generation !== capturedGeneration)
+				if (closed || activeConfig() !== captured || generation !== capturedGeneration)
 					return res.status(409).json({ code: "DEVICE_CHANGED", error: "Device binding changed; refresh" });
 				if (!response.ok) {
 					const failure = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -268,7 +313,7 @@ export async function installLocalDeviceCenter(options: Options) {
 				const data = JSON.parse(Buffer.concat(chunks).toString("utf8"));
 				res.status(response.status).json(data);
 			} catch {
-				if (!res.destroyed && (closed || config !== captured || generation !== capturedGeneration))
+				if (!res.destroyed && (closed || activeConfig() !== captured || generation !== capturedGeneration))
 					return res.status(409).json({ code: "DEVICE_CHANGED", error: "Device binding changed; refresh" });
 				if (!res.destroyed)
 					res.status(502).json({ code: "HUB_UNAVAILABLE", error: "Hub request failed or exceeded response limit" });
@@ -464,8 +509,9 @@ export async function installLocalDeviceCenter(options: Options) {
 	return {
 		syncBots,
 		getConfig() {
-			if (!config) return undefined;
-			const { uiCredential: _uiCredential, ...agentConfig } = config;
+			const current = activeConfig();
+			if (!current) return undefined;
+			const { uiCredential: _uiCredential, ...agentConfig } = current;
 			return agentConfig;
 		},
 		async close() {
@@ -474,8 +520,11 @@ export async function installLocalDeviceCenter(options: Options) {
 			generation++;
 			for (const controller of activeRequests) controller.abort();
 			await serial;
+			await localStarting;
 			await connection?.close();
 			connection = undefined;
+			await localHub?.close();
+			localHub = undefined;
 		},
 	};
 }

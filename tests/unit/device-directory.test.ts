@@ -4,6 +4,51 @@ import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { DeviceDirectory } from "../../web/src/components/DeviceDirectory.js";
 import { LanguageProvider } from "../../web/src/i18n.js";
+it("opens authorized device and desktop URLs through the desktop window bridge", async () => {
+	const openHub = vi.fn(async (_url: string) => true);
+	vi.stubGlobal("piDesktop", { openHub });
+	const popup = vi.spyOn(window, "open");
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (_url: unknown, options?: RequestInit) => ({
+			ok: true,
+			json: async () =>
+				options?.method === "POST"
+					? { url: "https://hub.example.com/device/mac/__open?ticket=secret&next=/ignored" }
+					: { devices: [{ id: "mac", name: "Mac", online: true }] },
+		})),
+	);
+	const host = document.createElement("div");
+	document.body.append(host);
+	const root = createRoot(host);
+	try {
+		await act(async () =>
+			root.render(
+				createElement(
+					LanguageProvider,
+					null,
+					createElement(DeviceDirectory, { hubUrl: "https://hub.example.com", currentDeviceId: "win" }),
+				),
+			),
+		);
+		const links = host.querySelectorAll<HTMLAnchorElement>(".dd-device a");
+		await act(async () => links[0].click());
+		await act(async () => links[1].click());
+		expect(popup).not.toHaveBeenCalled();
+		expect(openHub.mock.calls.map(([url]) => url)).toEqual([
+			"https://hub.example.com/device/mac/__open?ticket=secret",
+			"https://hub.example.com/device/mac/__open?ticket=secret&next=%2Fdesktop",
+		]);
+		openHub.mockResolvedValue(false);
+		await act(async () => links[0].click());
+		expect(host.querySelector('[role="alert"]')).not.toBeNull();
+	} finally {
+		act(() => root.unmount());
+		host.remove();
+		popup.mockRestore();
+		vi.unstubAllGlobals();
+	}
+});
 it("lists account devices and links each stable ID through the configured hub", async () => {
 	vi.stubGlobal(
 		"fetch",

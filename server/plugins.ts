@@ -46,6 +46,7 @@ import {
 	type UiPluginUi,
 	type BgServer,
 	type UiPluginSettingField,
+	type UiSelectOption,
 	type UiPluginCatalogEntry,
 	type PluginBusEvent,
 	type PluginModelInfo,
@@ -1540,6 +1541,26 @@ function parseSettingsSchema(raw: unknown): UiPluginSettingField[] {
 				: undefined;
 		const type = (typeof o.type === "string" && o.type ? o.type : optionsFrom ? "select" : "") as string;
 		if (!key || !SETTING_TYPES.has(type) || out.some((x) => x.key === key)) continue;
+		let options: UiPluginSettingField["options"];
+		if (Array.isArray(o.options)) {
+			const parsed: (string | UiSelectOption)[] = [];
+			for (const opt of o.options) {
+				if (typeof opt === "string") {
+					parsed.push(opt);
+				} else if (opt && typeof opt === "object" && typeof (opt as Record<string, unknown>).value === "string") {
+					const val = (opt as Record<string, unknown>).value as string;
+					const item: UiSelectOption = { value: val };
+					if (typeof (opt as Record<string, unknown>).label === "string") {
+						item.label = (opt as Record<string, unknown>).label as string;
+					}
+					if (typeof (opt as Record<string, unknown>).labelEn === "string") {
+						item.labelEn = (opt as Record<string, unknown>).labelEn as string;
+					}
+					parsed.push(item);
+				}
+			}
+			if (parsed.length > 0) options = parsed;
+		}
 		const field: UiPluginSettingField = {
 			key,
 			type: type as UiPluginSettingField["type"],
@@ -1547,7 +1568,7 @@ function parseSettingsSchema(raw: unknown): UiPluginSettingField[] {
 			...(o.default !== undefined ? { default: o.default as string | number | boolean } : {}),
 			...(typeof o.min === "number" ? { min: o.min } : {}),
 			...(typeof o.max === "number" ? { max: o.max } : {}),
-			...(Array.isArray(o.options) ? { options: o.options.filter((x): x is string => typeof x === "string") } : {}),
+			...(options ? { options } : {}),
 			...(type === "select" && optionsFrom ? { optionsFrom } : {}),
 			...(typeof o.hint === "string" ? { hint: o.hint } : {}),
 		};
@@ -1721,7 +1742,9 @@ function cleanNonSecretSettingsField(
 			}
 			return { value: v === undefined ? (f.default ?? "") : s };
 		}
-		if (v !== undefined && !f.options?.includes(s))
+		const hasOptions = Array.isArray(f.options);
+		const allowedValues = f.options?.map((opt) => (typeof opt === "string" ? opt : opt.value));
+		if (v !== undefined && (!hasOptions || !allowedValues?.includes(s)))
 			return {
 				error: pick(lang, `${f.label} 值非法`, `Invalid value for ${f.label}`, "plugins.settings.invalid.value", {
 					"f.label": f.label,

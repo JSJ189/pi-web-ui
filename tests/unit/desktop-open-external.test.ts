@@ -3,7 +3,24 @@
  * 拦截 `file/javascript/data/ftp/自定义协议/非法串`。
  */
 import { describe, expect, it } from "vitest";
-import { isAllowedExternalUrl } from "../../desktop/external-url.js";
+import { hubBrowserOrigin, isAllowedExternalUrl } from "../../desktop/external-url.js";
+
+describe("Hub browser destinations", () => {
+	it("normalizes origins while rejecting credentials and non-web protocols", () => {
+		expect(hubBrowserOrigin("http://82.156.246.55:50001/")).toBe("http://82.156.246.55:50001");
+		expect(hubBrowserOrigin("https://hub.example.com/pair")).toBe("https://hub.example.com");
+		for (const url of [
+			null,
+			"",
+			"file:///test",
+			"javascript:alert(1)",
+			"https://user:secret@example.com",
+			"https://hub.example.com\n",
+		])
+			expect(hubBrowserOrigin(url)).toBeNull();
+		expect(hubBrowserOrigin("https://hub.example.com.evil.test")).not.toBe(hubBrowserOrigin("https://hub.example.com"));
+	});
+});
 
 describe("isAllowedExternalUrl", () => {
 	it("放行 http/https（含大写 scheme）", () => {

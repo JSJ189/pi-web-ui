@@ -33,6 +33,14 @@ export const ENGINE_METAS: Record<CanvasEngineId, EngineMeta> = {
 		bgColor: "color-mix(in srgb, var(--info-blue, #38bdf8) 15%, transparent)",
 		desc: "基于 Hashline 补丁引擎，擅长极速高频代码重构与打补丁",
 	},
+	codex: {
+		id: "codex",
+		name: "Codex",
+		badge: "CODEX",
+		color: "var(--green, #22c55e)",
+		bgColor: "color-mix(in srgb, var(--green, #22c55e) 15%, transparent)",
+		desc: "OpenAI Codex CLI",
+	},
 	claude: {
 		id: "claude",
 		name: "Claude Code",

@@ -17,7 +17,7 @@ describe("sandbox engine admission and execution", () => {
 	});
 	afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-	it.each(["dsh", "claude", "durable", "mock"])(
+	it.each(["dsh", "claude", "codex", "durable", "mock"])(
 		"rejects %s in managed sandboxes but permits normal projects",
 		(engine) => {
 			expect(() => assertEngineWorkspaceSupported(manager, root, engine)).not.toThrow();
@@ -34,21 +34,24 @@ describe("sandbox engine admission and execution", () => {
 		expect(() => assertEngineWorkspaceSupported(manager, sandboxPath, "claude")).toThrow();
 	});
 
-	it.each(["claude", "durable"])("rejects %s attachment in a sandbox before driver initialization", (engine) => {
-		expect(
-			() =>
-				new UniversalSession({
-					clientId: "test",
-					cwd: sandboxPath,
-					dataDir: root,
-					engine,
-					send: vi.fn(),
-					store: {} as any,
-					driver: { id: engine } as any,
-					driverFactory: vi.fn(),
-				}),
-		).toThrow("does not support");
-	});
+	it.each(["claude", "codex", "durable"])(
+		"rejects %s attachment in a sandbox before driver initialization",
+		(engine) => {
+			expect(
+				() =>
+					new UniversalSession({
+						clientId: "test",
+						cwd: sandboxPath,
+						dataDir: root,
+						engine,
+						send: vi.fn(),
+						store: {} as any,
+						driver: { id: engine } as any,
+						driverFactory: vi.fn(),
+					}),
+			).toThrow("does not support");
+		},
+	);
 
 	it("blocks universal prompt, restore, cwd switching and subagent execution before driver calls", async () => {
 		const driver = { resumeSession: vi.fn(), setCwd: vi.fn(), sendPrompt: vi.fn() };

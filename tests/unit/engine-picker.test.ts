@@ -52,6 +52,9 @@ describe("引擎列表元数据与安装检测 (SUPPORTED_ENGINES & EnginePicker
 		expect(claude).toBeDefined();
 		expect(claude?.packageName).toBe("@anthropic-ai/claude-code");
 		expect(claude?.installCommand).toBe("npm i -g @anthropic-ai/claude-code");
+		const codex = SUPPORTED_ENGINES.find((e) => e.id === "codex");
+		expect(codex?.packageName).toBe("@openai/codex");
+		expect(codex?.installCommand).toBe("npm i -g @openai/codex");
 	});
 
 	it("未安装的引擎显示「未安装」标签与「安装」按钮，且点击无法切换引擎只能触发安装终端", () => {
@@ -157,6 +160,25 @@ describe("引擎列表元数据与安装检测 (SUPPORTED_ENGINES & EnginePicker
 		});
 		expect(sentMessages).toContainEqual({ type: "switch_engine", engine: "dsh" });
 		expect(runCommandEvents).toHaveLength(0);
+	});
+
+	it("已安装的 Codex 可从选择器切换", () => {
+		setAppGlobals({ engine: "pi", engines: [{ id: "codex", installed: true, packageName: "@openai/codex" }] });
+		const root = createRoot(container);
+		act(() => {
+			root.render(createElement(LanguageProvider, null, createElement(EnginePicker, null)));
+		});
+		act(() => {
+			(container.querySelector(".engine-picker-btn") as HTMLElement).click();
+		});
+		const item = container.querySelector(".engine-picker-item.engine-codex") as HTMLElement;
+		expect(item.textContent).toContain("CODEX");
+		expect(item.querySelector(".engine-picker-install-btn")).toBeNull();
+		act(() => {
+			item.click();
+		});
+		expect(sentMessages).toContainEqual({ type: "switch_engine", engine: "codex" });
+		act(() => root.unmount());
 	});
 
 	it("已安装但存在新版本的引擎显示「可更新」标签与「更新」按钮，点击更新按钮触发全局包更新", () => {

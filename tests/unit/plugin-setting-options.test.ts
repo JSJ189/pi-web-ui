@@ -52,6 +52,17 @@ describe("pluginSelectValues", () => {
 		expect(pluginSelectValues({ optionsFrom: "models" }, models, 0)).toEqual(["", "openai/gpt-5", "xai/grok-4", "0"]);
 	});
 
+	it("静态 options 为对象数组（{ value, label }）：正确提取 value", () => {
+		expect(
+			pluginSelectValues({
+				options: [
+					{ value: "shizuku", label: "🌸 雫 (Shizuku)" },
+					{ value: "haru", label: "🌿 春 (Haru)" },
+				],
+			}),
+		).toEqual(["shizuku", "haru"]);
+	});
+
 	it("静态 options 与宿主数据源同时存在：静态在前、动态在后、整体去重", () => {
 		expect(pluginSelectValues({ options: ["", "off"], optionsFrom: "thinkingLevels" })).toEqual([
 			"",

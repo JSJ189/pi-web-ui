@@ -1,7 +1,7 @@
 /**
- * desktop-use/index.mjs — Windows 桌面控制插件（纯服务端插件，无 client/ 视图）。
+ * desktop-use/index.mjs — Windows/macOS 桌面控制插件（纯服务端插件，无 client/ 视图）。
  *
- * 思路（用户定稿）：不截图。元素定位走 Windows 自带的 UI Automation
+ * 元素定位优先走 Windows 自带的 UI Automation，辅以窗口截图和 OCR
  * （ps/uia.ps1 枚举控件名/类型/矩形，模型按 id 选），输入走 nut-js
  * （@nut-tree-fork/nut-js，模型点矩形中心），PowerShell SendInput 兜底。
  *
@@ -19,6 +19,8 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { runMac } from "./mac-backend.mjs";
+import { finitePoint, screenshotPoint, matchOcr, parseShortcut, scrollInput, tapKeys } from "./actions.mjs";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -42,9 +44,6 @@ const INPUT_TIMEOUT_MS = 20_000;
 const DUMP_TTL_MS = 90_000;
 /** 正文里的元素行数上限（dump 本身可存更多，防 token 爆炸）。 */
 const LIST_TEXT_CAP = 150;
-
-const WIN_ONLY_ZH = "desktop-use 只支持 Windows（当前系统不是 win32）。";
-const WIN_ONLY_EN = "desktop-use is Windows-only (this host is not win32).";
 
 // ---------------------------------------------------------------------------
 // 解码：powershell.exe 按系统代码页输出（中文系统多为 GBK），ConvertTo-Json
@@ -130,6 +129,7 @@ function buildNutKeyMap(Key) {
 		end: find("end"),
 		pgup: find("pageup", "pgup"),
 		pgdn: find("pagedown", "pgdn"),
+		insert: find("insert"),
 		ctrl: find("leftcontrol", "control", "ctrl", "leftctrl"),
 		alt: find("leftalt", "alt"),
 		shift: find("leftshift", "shift"),
@@ -158,10 +158,15 @@ export default {
 			offs: [],
 		};
 		const isWin = process.platform === "win32";
+		const isMac = process.platform === "darwin";
 
 		const requireWin = () => {
-			if (!isWin) throw new Error(`${WIN_ONLY_ZH} / ${WIN_ONLY_EN}`);
+			if (!isWin && !isMac) throw new Error("desktop-use supports Windows and macOS only.");
 		};
+		const runDesktop = (script, fields, options = {}) =>
+			isMac
+				? runMac(script === UIA_PS1 ? "elements" : script === SHOT_PS1 ? "screenshot" : fields.Op, fields, options)
+				: runPs(script, psArgs(fields), options);
 
 		// ---- 依赖自安装（db-client 同款：目录锁 + npm-cli 直调 + 看门狗） ----
 		const req = createRequire(join(PLUGIN_DIR, "index.mjs"));
@@ -322,13 +327,14 @@ export default {
 		// ---- 输入后端：nut-js 主用，PowerShell 兜底 ----
 		const needWinPs = () => {
 			requireWin();
-			if (!existsSync(UIA_PS1) || !existsSync(INPUT_PS1)) {
+			if (isWin && (!existsSync(UIA_PS1) || !existsSync(INPUT_PS1))) {
 				throw new Error("桌面控制的 PowerShell 脚本缺失（ps/*.ps1），请重装插件。");
 			}
 		};
 
 		/** 有 nut 且就绪 → true；安装中 → 抛“稍后”；失败/缺失 → false（走兜底）。 */
 		function nutReadyOrThrow() {
+			if (isMac) return false;
 			if (st.nut) return true;
 			if (st.depsInstalling) {
 				throw new Error("输入依赖正在安装（约 1～3 分钟），稍后重试；只读的元素查询（desktop_elements）不受影响。");
@@ -350,15 +356,20 @@ export default {
 
 		async function psInput(op, fields = {}, signal) {
 			needWinPs();
-			const r = await runPs(INPUT_PS1, psArgs({ Op: op, ...fields }), {
-				timeout: INPUT_TIMEOUT_MS,
-				signal,
-			});
+			const r = await runDesktop(
+				INPUT_PS1,
+				{ Op: op, ...fields },
+				{
+					timeout: INPUT_TIMEOUT_MS,
+					signal,
+				},
+			);
 			if (!r?.ok) throw new Error(`输入兜底失败：${r?.error ?? "unknown"}`);
 			return r;
 		}
 
 		async function doClick(x, y, { button = "left", double = false } = {}, signal) {
+			signal?.throwIfAborted();
 			if (nutReadyOrThrow() && st.nut) {
 				const { mouse, Button, Point } = st.nut;
 				try {
@@ -386,23 +397,19 @@ export default {
 				}
 			}
 			await psInput("click", { X: Math.round(x), Y: Math.round(y), Button: button, Double: double ? 1 : 0 }, signal);
-			return { backend: "powershell", x: Math.round(x), y: Math.round(y), button, double };
+			return { backend: isMac ? "macos-native" : "powershell", x: Math.round(x), y: Math.round(y), button, double };
 		}
 
 		function parseKeys(input) {
-			const raw = Array.isArray(input) ? input.join("+") : String(input ?? "");
-			const parts = raw
-				.split("+")
-				.map((s) => s.trim().toLowerCase())
-				.filter(Boolean);
-			if (parts.length === 0) throw new Error('keys 为空（如 "enter" / "ctrl+c" / "alt+F4" / "win+r"）。');
-			return parts;
+			return parseShortcut(Array.isArray(input) ? input.join("+") : input);
 		}
 
 		async function doKey(parts, signal) {
 			if (nutReadyOrThrow() && st.nut) {
 				const { keyboard, keyMap } = st.nut;
+				let injected = false;
 				try {
+					if (typeof keyboard.releaseKey !== "function") throw new Error("nut 无 releaseKey 方法");
 					const mods = [];
 					let main = null;
 					for (const p of parts) {
@@ -417,27 +424,36 @@ export default {
 						if (p.length === 1) return /^[a-z]$/.test(p) ? keyMap.letter(p) : keyMap.digit(p);
 						return keyMap[p];
 					};
-					if (main === null) {
-						for (const m of mods) await keyboard.pressKey(m);
-					} else {
+					const keys = [...mods];
+					if (main !== null) {
 						const k = toKey(main);
 						if (k === undefined) throw new Error(`nut 无 ${main} 键`);
-						await keyboard.pressKey(...mods, k);
+						keys.push(k);
 					}
+					signal?.throwIfAborted();
+					injected = true;
+					await tapKeys(keyboard, keys);
 					return { backend: "nut", keys: parts.join("+") };
 				} catch (e) {
+					if (injected || signal?.aborted) throw e;
 					host.log("warn", `desktop-use: nut 按键失败，切 PowerShell 兜底：${e?.message ?? e}`);
 				}
 			}
+			signal?.throwIfAborted();
 			await psInput("key", { Keys: parts.join("+") }, signal);
-			return { backend: "powershell", keys: parts.join("+") };
+			return { backend: isMac ? "macos-native" : "powershell", keys: parts.join("+") };
 		}
 
 		const isAscii = (s) => /^[\x20-\x7E\r\n\t]*$/.test(s ?? "");
 
 		async function doType(text, signal) {
+			signal?.throwIfAborted();
 			if (typeof text !== "string" || text.length === 0) throw new Error("text 为空。");
 			if (text.length > 2000) throw new Error("单次输入限 2000 字符（分多次调）。");
+			if (isMac) {
+				await psInput("paste", { Text: text }, signal);
+				return { backend: "macos-native-unicode", chars: text.length };
+			}
 			// 中文/emoji 走剪贴板粘贴（SendInput 发不出 CJK；调用前须已聚焦目标）
 			if (!isAscii(text)) {
 				await psInput("paste", { Text: text }, signal);
@@ -484,7 +500,7 @@ export default {
 			return key;
 		}
 
-		function resolvePoint({ dump, id, x, y, shot, text }) {
+		function resolvePoint({ dump, id, x, y, shot, text, occurrence }) {
 			// 截图坐标优先：shot 快照 + 图内像素/文字匹配 → 屏幕坐标（自绘界面唯一可靠的点法）
 			if (shot !== undefined && shot !== null && String(shot) !== "") {
 				const s = st.shots.get(String(shot));
@@ -502,21 +518,7 @@ export default {
 					if (ocrList.length === 0) {
 						throw new Error(`截图 ${shot} 中未识别到文字或 OCR 未启用，请改传图内像素坐标 x+y。`);
 					}
-					const qNoSpace = q.replace(/\s+/g, "").toLowerCase();
-					// 匹配优先级：精确匹配 > 去除空格精确匹配 > 包含匹配 > 忽略大小写包含
-					let hit = ocrList.find((it) => it.text === q);
-					if (!hit) hit = ocrList.find((it) => it.text.replace(/\s+/g, "").toLowerCase() === qNoSpace);
-					if (!hit) hit = ocrList.find((it) => it.text.toLowerCase().includes(q.toLowerCase()));
-					if (!hit) hit = ocrList.find((it) => q.toLowerCase().includes(it.text.toLowerCase()));
-					if (!hit) {
-						const cands = ocrList
-							.slice(0, 10)
-							.map((it) => `「${it.text}」`)
-							.join("、");
-						throw new Error(
-							`截图 ${shot} 的 OCR 结果中未找到文字「${q}」（图内文字如：${cands}${ocrList.length > 10 ? " 等" : ""}），请传 x+y 像素坐标或换关键词。`,
-						);
-					}
+					const hit = matchOcr(ocrList, q, occurrence);
 					imgX = hit.cx;
 					imgY = hit.cy;
 					viaText = `OCR文字「${hit.text}」中心(${hit.cx},${hit.cy}) `;
@@ -525,8 +527,7 @@ export default {
 				if (typeof imgX !== "number" || typeof imgY !== "number") {
 					throw new Error("shot 模式要给图内像素坐标 x+y，或传 text 按文字定位（左上角为原点）。");
 				}
-				const sx = Math.round(s.winX + (imgX * s.winW) / s.imgW);
-				const sy = Math.round(s.winY + (imgY * s.winH) / s.imgH);
+				const { x: sx, y: sy } = screenshotPoint(s, imgX, imgY);
 				return { x: sx, y: sy, via: `截图 ${shot} ${viaText}图内(${imgX},${imgY})→屏幕(${sx},${sy})` };
 			}
 			if (id !== undefined && id !== null && String(id) !== "") {
@@ -540,7 +541,7 @@ export default {
 				return { x: hit.x, y: hit.y, via: `id ${id}（${hit.name || "未命名"}）` };
 			}
 			if (typeof x === "number" && typeof y === "number") {
-				return { x, y, via: "raw 屏幕坐标（非快照元素，点错风险自负）" };
+				return { ...finitePoint(x, y), via: "raw 屏幕坐标（非快照元素，点错风险自负）" };
 			}
 			throw new Error("给 shot+x+y（截图点，自绘界面用）或 dump+id（UIA 元素）或 x+y 屏幕坐标。");
 		}
@@ -609,9 +610,9 @@ export default {
 					const p = params ?? {};
 					const scope = ["foreground", "desktop", "window"].includes(p.scope) ? p.scope : "foreground";
 					const maxNodes = Math.min(800, Math.max(10, Math.floor(Number(p.max_nodes) || 200)));
-					const r = await runPs(
+					const r = await runDesktop(
 						UIA_PS1,
-						psArgs({
+						{
 							Scope: scope,
 							Title: p.title ?? "",
 							Process: p.process ?? "",
@@ -619,7 +620,7 @@ export default {
 							MaxNodes: maxNodes,
 							// Chromium 系控件嵌套深（地址栏常在 8 层左右），默认 8 层；desktop 只取顶层窗口
 							MaxDepth: scope === "desktop" ? 1 : 8,
-						}),
+						},
 						{ signal },
 					);
 					if (!r?.ok) throw new Error(`元素枚举失败：${r?.error ?? "unknown"}`);
@@ -650,8 +651,9 @@ export default {
 						text: {
 							type: "string",
 							description:
-								"Optional: click by text on the screenshot (requires shot; auto-matches the OCR text center — no coordinate guessing).",
+								"Optional: click by text on the screenshot (requires shot; ambiguous matches require occurrence).",
 						},
+						occurrence: { type: "integer", minimum: 1, description: "1-based OCR match index in returned OCR order." },
 						dump: { type: "string", description: "Snapshot key returned by desktop_elements." },
 						id: { type: "string", description: "Element id (e.g. 0.2.1)." },
 						...POINT_PROPS,
@@ -671,7 +673,7 @@ export default {
 				name: "desktop_screenshot",
 				label: "窗口截图",
 				description:
-					"Screenshot a window (PrintWindow, works even when occluded): returns image + window top-left screen coords + scale + OCR text with in-image pixel coords; the live mouse cursor is drawn into the image with its coords.",
+					"Capture a window using native Windows/macOS APIs, with screen coordinates, scale and optional offline OCR. macOS needs Screen Recording permission; Windows can overlay the cursor.",
 				promptSnippet: "screenshot a window with OCR text and mouse position",
 				promptGuidelines: GUIDELINES,
 				parameters: {
@@ -720,7 +722,7 @@ export default {
 						: { Title: p.title ?? "", Process: p.process ?? "", MaxWidth: maxWidth, Out: outFile, Ocr: ocrEnabled };
 					let r;
 					try {
-						r = await runPs(SHOT_PS1, psArgs(args), { timeout: 60000, signal });
+						r = await runDesktop(SHOT_PS1, args, { timeout: 60000, signal });
 					} finally {
 						if (!r?.out) {
 							try {
@@ -820,6 +822,7 @@ export default {
 					type: "object",
 					properties: {
 						text: { type: "string", description: "Text to type." },
+						occurrence: { type: "integer", minimum: 1, description: "1-based OCR match index for click_text." },
 						click_text: {
 							type: "string",
 							description:
@@ -875,6 +878,71 @@ export default {
 				},
 			},
 			{
+				name: "desktop_scroll",
+				label: "滚动桌面",
+				description:
+					"Scroll vertically or horizontally at a target from a fresh screenshot or element snapshot. Amount is wheel notches (1–100).",
+				promptSnippet: "scroll a desktop panel at a known target",
+				promptGuidelines: GUIDELINES,
+				parameters: {
+					type: "object",
+					properties: {
+						shot: { type: "string", description: "Screenshot key." },
+						text: { type: "string", description: "OCR text to locate the scroll target." },
+						occurrence: { type: "integer", minimum: 1, description: "1-based OCR match index." },
+						dump: { type: "string", description: "Element snapshot key." },
+						id: { type: "string", description: "Element id to scroll over." },
+						...POINT_PROPS,
+						direction: { type: "string", enum: ["up", "down", "left", "right"] },
+						amount: { type: "integer", minimum: 1, maximum: 100, description: "Wheel notches; default 3." },
+					},
+				},
+				async execute(_id, params, signal) {
+					requireWin();
+					const p = params ?? {};
+					const wheel = scrollInput(p.direction, p.amount);
+					const pt = resolvePoint(p);
+					signal?.throwIfAborted();
+					await psInput("scroll", { X: pt.x, Y: pt.y, ...wheel }, signal);
+					return `已滚动 ${p.direction ?? "down"} ${p.amount ?? 3} 格，目标 ${pt.via}。请重新查询目标区域。`;
+				},
+			},
+			{
+				name: "desktop_drag",
+				label: "拖拽桌面",
+				description:
+					"Drag the left mouse button between two in-image points from one fresh screenshot. Releases the button before reporting completion or cancellation.",
+				promptSnippet: "drag between two points in a fresh desktop screenshot",
+				promptGuidelines: GUIDELINES,
+				parameters: {
+					type: "object",
+					properties: {
+						shot: { type: "string", description: "Fresh screenshot key; all coordinates are image pixels." },
+						x: { type: "number", description: "Start image X." },
+						y: { type: "number", description: "Start image Y." },
+						to_x: { type: "number", description: "End image X." },
+						to_y: { type: "number", description: "End image Y." },
+						duration_ms: { type: "integer", minimum: 100, maximum: 2000, description: "Drag duration; default 500ms." },
+					},
+					required: ["shot", "x", "y", "to_x", "to_y"],
+				},
+				async execute(_id, params, signal) {
+					requireWin();
+					const p = params ?? {};
+					if (!p.shot) throw new Error("拖拽需要新截图 shot。");
+					const duration = p.duration_ms ?? 500;
+					if (!Number.isInteger(duration) || duration < 100 || duration > 2000)
+						throw new Error("duration_ms 必须在 100–2000 之间。");
+					const start = resolvePoint({ shot: p.shot, x: p.x, y: p.y });
+					const end = resolvePoint({ shot: p.shot, x: p.to_x, y: p.to_y });
+					signal?.throwIfAborted();
+					// Do not kill the helper while a button is held. Cancellation is observed after its bounded gesture releases it.
+					await psInput("drag", { X: start.x, Y: start.y, ToX: end.x, ToY: end.y, Duration: duration });
+					signal?.throwIfAborted();
+					return `已拖拽 (${start.x},${start.y}) → (${end.x},${end.y})。请重新截图验证。`;
+				},
+			},
+			{
 				name: "desktop_window",
 				label: "窗口列表/聚焦",
 				description:
@@ -894,22 +962,29 @@ export default {
 					const p = params ?? {};
 					if (p.action === "focus") {
 						if (!p.title) throw new Error("focus 需要 title（窗口标题子串）。");
-						const r = await runPs(INPUT_PS1, psArgs({ Op: "focus", Title: p.title }), {
-							timeout: INPUT_TIMEOUT_MS,
-							signal,
-						});
+						const r = await runDesktop(
+							INPUT_PS1,
+							{ Op: "focus", Title: p.title },
+							{
+								timeout: INPUT_TIMEOUT_MS,
+								signal,
+							},
+						);
 						if (!r?.ok) throw new Error(`聚焦失败：${r?.error ?? "unknown"}`);
 						await new Promise((r2) => setTimeout(r2, 400));
 						return `已聚焦：${r.title}`;
 					}
-					const r = await runPs(UIA_PS1, psArgs({ Scope: "desktop", MaxNodes: 120, MaxDepth: 1 }), { signal });
+					const r = await runDesktop(UIA_PS1, { Scope: "desktop", MaxNodes: 120, MaxDepth: 1 }, { signal });
 					if (!r?.ok) throw new Error(`窗口枚举失败：${r?.error ?? "unknown"}`);
 					const wins = (r.nodes ?? []).filter((n) => n.type === "Window" && n.name);
 					if (wins.length === 0) return "没有可见顶层窗口。";
 					return (
 						`顶层窗口（${wins.length}，标题易变的认进程名）：\n` +
 						wins
-							.map((w) => `- 「${w.name}」${w.proc ? ` (${w.proc}.exe${w.cls ? ` / ${w.cls}` : ""})` : ""}`)
+							.map(
+								(w) =>
+									`- 「${w.name}」${w.proc ? ` (${w.proc}${isWin ? ".exe" : ""}${w.cls ? ` / ${w.cls}` : ""})` : ""}`,
+							)
 							.join("\n")
 					);
 				},
@@ -926,20 +1001,22 @@ export default {
 		}
 
 		// 探活 nut；缺失则后台自安装（不挡 activate，工具调用时看状态）
-		probeNut().then((ok) => {
-			if (st.dead) return;
-			if (ok) {
-				st.depsOk = true;
-				host.log("info", "desktop-use: 输入依赖就绪（nut-js）");
-			} else {
-				ensureDeps(true);
-			}
-		});
+		if (isWin)
+			probeNut().then((ok) => {
+				if (st.dead) return;
+				if (ok) {
+					st.depsOk = true;
+					host.log("info", "desktop-use: 输入依赖就绪（nut-js）");
+				} else {
+					ensureDeps(true);
+				}
+			});
 
 		return {
 			deactivate() {
 				st.dead = true;
 				st.dumps.clear();
+				st.shots.clear();
 				try {
 					st.installer?.kill("SIGTERM");
 				} catch {

@@ -21,6 +21,7 @@ import { botExecutionMessageAllowed } from "./device-center/bot-execution.js";
 import "./patch-remote-catalog.js";
 import "./patch-turn-end-boundary.js";
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { registerPromptTemplateRoutes } from "./prompt-templates.js";
 import { readFile, stat } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { proxyHttp, type ProxyHit } from "./http-proxy.js";
@@ -120,6 +121,7 @@ import {
 } from "./remote-ssh-service.js";
 import { handlePluginMessage } from "./dispatch-plugin-handlers.js";
 import { CanvasOrchestrator } from "./canvas/canvas-orchestrator.js";
+import { executeScheduledCanvas, validateScheduledCanvas } from "./canvas/canvas-scheduled-task.js";
 import { setCanvasBroadcaster, setCanvasRuntime } from "./canvas/canvas-agent-tool.js";
 import { handleCanvasMessage } from "./canvas/canvas-dispatch.js";
 import type {
@@ -599,19 +601,22 @@ app.use((req, res, next) => {
 
 /** 共享客户端持久化存储：双引擎（pi + dsh）共用同一份内存缓存与落盘通道，避免互相覆盖。 */
 const sharedStateStore = new ClientStateStore(join(DATA_DIR, "client-state.json"));
+registerPromptTemplateRoutes(app, DATA_DIR);
 
-/** 启动参数显式指定的引擎（--engine pi|dsh|claude|durable 或 PI_WEB_ENGINE）。未显式传则优先读持久化默认引擎。 */
+/** 启动参数显式指定的引擎（--engine pi|dsh|codex|claude|durable 或 PI_WEB_ENGINE）。未显式传则优先读持久化默认引擎。 */
 const EXPLICIT_ENGINE_ARG = cliFlag("--engine") ?? process.env.PI_WEB_ENGINE;
 let currentDefaultEngine: EngineId =
-	EXPLICIT_ENGINE_ARG === "durable"
-		? "durable"
-		: EXPLICIT_ENGINE_ARG === "claude"
-			? "claude"
-			: EXPLICIT_ENGINE_ARG === "dsh"
-				? "dsh"
-				: EXPLICIT_ENGINE_ARG === "pi"
-					? "pi"
-					: (sharedStateStore.getDefaultEngine() ?? "pi");
+	EXPLICIT_ENGINE_ARG === "codex"
+		? "codex"
+		: EXPLICIT_ENGINE_ARG === "durable"
+			? "durable"
+			: EXPLICIT_ENGINE_ARG === "claude"
+				? "claude"
+				: EXPLICIT_ENGINE_ARG === "dsh"
+					? "dsh"
+					: EXPLICIT_ENGINE_ARG === "pi"
+						? "pi"
+						: (sharedStateStore.getDefaultEngine() ?? "pi");
 /** 默认引擎标识（兼容 /api/health 等读取）。 */
 /** 每个客户端（浏览器标签页 clientId）当前激活的引擎。支持多标签页同时跑不同引擎 + 零重启热切。 */
 const clientEngines = new Map<string, EngineId>();
@@ -1459,7 +1464,7 @@ heartbeatTimer.unref?.();
 // PI_WEB_ENGINE=durable 时使用 Pi Durable 引擎（server/durable/），
 // 默认 pi 引擎。同一 wire 协议，前端无感知（ready/health 携带 engine 字段）。
 import { DshAgentService } from "./dsh/dsh-agent-service.js";
-import { UniversalAgentService, ClaudeCodeDriver, probeClaudeCode } from "./universal/index.js";
+import { UniversalAgentService, ClaudeCodeDriver, probeClaudeCode, CodexDriver } from "./universal/index.js";
 import { DurableAgentService } from "./durable/index.js";
 import {
 	probeAllEngines,
@@ -1891,6 +1896,7 @@ export interface EngineService {
 let piServiceInstance: AgentService | null = null;
 let dshServiceInstance: DshAgentService | null = null;
 let claudeServiceInstance: UniversalAgentService | null = null;
+let codexServiceInstance: UniversalAgentService | null = null;
 let durableServiceInstance: DurableAgentService | null = null;
 let wireEngineHooks: ((svc: EngineService) => void) | null = null;
 let sharedSocketCount = 0;
@@ -1901,11 +1907,28 @@ function activeEngines(): EngineService[] {
 	if (piServiceInstance) list.push(piServiceInstance);
 	if (dshServiceInstance) list.push(dshServiceInstance);
 	if (claudeServiceInstance) list.push(claudeServiceInstance);
+	if (codexServiceInstance) list.push(codexServiceInstance);
 	if (durableServiceInstance) list.push(durableServiceInstance);
 	return list;
 }
 
 function ensureEngine(engine: EngineId): EngineService {
+	if (engine === "codex") {
+		if (!codexServiceInstance) {
+			codexServiceInstance = new UniversalAgentService({
+				cwd: CWD,
+				dataDir: DATA_DIR,
+				agentDir: getAgentDir(),
+				stateStore: sharedStateStore,
+				engine: "codex",
+				driverFactory: (cwd) => new CodexDriver(cwd),
+			});
+			for (let i = 0; i < sharedSocketCount; i++) codexServiceInstance.noteSocketOpen();
+			if (sharedQuiesced) codexServiceInstance.quiesce();
+			wireEngineHooks?.(codexServiceInstance);
+		}
+		return codexServiceInstance;
+	}
 	if (engine === "durable") {
 		if (!durableServiceInstance) {
 			durableServiceInstance = new DurableAgentService({
@@ -2306,7 +2329,11 @@ canvasOrchestrator.setBroadcaster((msg) => {
 // 客户端（chatFromScheduler）；单次任务触发后自动删除。DSH 引擎无这俩方法时
 // executor 回 not-supported（历史里记失败，不炸进程）。
 const scheduler = new SchedulerStore(DATA_DIR, {
+	validateTask: (task) => validateScheduledCanvas(DATA_DIR, task),
 	executor: async (task) => {
+		if (task.target === "canvas") {
+			return executeScheduledCanvas(DATA_DIR, canvasOrchestrator, task);
+		}
 		let result: { ok: boolean; conversationId?: string; error?: string };
 		try {
 			const svc = ensureEngine("pi") as unknown as {
@@ -2437,14 +2464,6 @@ const scheduler = new SchedulerStore(DATA_DIR, {
 			}
 		} catch (err) {
 			result = { ok: false, error: (err as Error).message };
-		}
-		// 单次任务：触发一次后自动删除（历史随任务一起走，成败已由上面的 notify 播报）。
-		if (task.oneShot) {
-			try {
-				scheduler.remove(task.id);
-			} catch {
-				// 删除失败不影响已记录的执行结果
-			}
 		}
 		return result;
 	},
@@ -2884,21 +2903,23 @@ wss.on("connection", (ws) => {
 
 	const handleSwitchEngine = async (msg: Extract<ClientMessage, { type: "switch_engine" }>): Promise<void> => {
 		const targetEngine: EngineId | null =
-			msg.engine === "durable"
-				? "durable"
-				: msg.engine === "claude"
-					? "claude"
-					: msg.engine === "dsh"
-						? "dsh"
-						: msg.engine === "pi"
-							? "pi"
-							: null;
+			msg.engine === "codex"
+				? "codex"
+				: msg.engine === "durable"
+					? "durable"
+					: msg.engine === "claude"
+						? "claude"
+						: msg.engine === "dsh"
+							? "dsh"
+							: msg.engine === "pi"
+								? "pi"
+								: null;
 		if (!targetEngine) {
 			send({
 				type: "notice",
 				level: "error",
-				text: `无效的引擎类型：${String(msg.engine)}（仅支持 pi / dsh / claude / durable）`,
-				textEn: `Invalid engine "${String(msg.engine)}" (supported: pi, dsh, claude, durable)`,
+				text: `无效的引擎类型：${String(msg.engine)}（仅支持 pi / dsh / codex / claude / durable）`,
+				textEn: `Invalid engine "${String(msg.engine)}" (supported: pi, dsh, codex, claude, durable)`,
 			});
 			return;
 		}
@@ -3057,6 +3078,7 @@ wss.on("connection", (ws) => {
 			pi: { zh: "Pi", en: "Pi" },
 			dsh: { zh: "DSH", en: "DSH" },
 			claude: { zh: "Claude Code", en: "Claude Code" },
+			codex: { zh: "Codex", en: "Codex" },
 			durable: { zh: "Pi Durable", en: "Pi Durable" },
 		};
 		const displayName = engineDisplayNames[targetEngine] ?? {

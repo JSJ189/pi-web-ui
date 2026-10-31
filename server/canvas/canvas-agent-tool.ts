@@ -199,9 +199,9 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 		label: "Canvas pipeline",
 		description:
 			"Read and edit canvas workflow graphs: list/get/create/delete graphs, add/update/delete nodes and edges, replace the DAG, layout/rearrange nodes on a tidy grid, run all or one node, stop, steer a running node, approve/reject review gates, read node logs, reset status, manage reusable custom cards. Use it when the user asks to create, change, run, or debug a pipeline.",
-		promptSnippet: "create or edit a canvas workflow pipeline",
+		promptSnippet: "Inspect, edit, run, or debug canvas workflows and canvas references.",
 		promptGuidelines: [
-			"Always get the graph first before editing so node ids and roles are real",
+			"Get the referenced graph before editing or running it; a canvas reference alone does not request execution",
 			"Running nodes costs tokens/time: prefer run_node for single-node debug, run_all only when the user asks",
 			"After steering or review, use get_log to confirm the node state before summarizing",
 			"New nodes default their cwd to the user's current project (getCwd); pass an absolute cwd only to pin another project",
@@ -452,7 +452,7 @@ export function makeCanvasTool(host: CanvasToolHost, lang?: () => ServerLang): T
 						x: 80 + (graph.nodes.length % 3) * 380,
 						y: 80 + Math.floor(graph.nodes.length / 3) * 260,
 						width: 300,
-						engine: (["pi", "dsh", "claude", "durable"] as const).includes(card.engine as never)
+						engine: (["pi", "dsh", "codex", "claude", "durable"] as const).includes(card.engine as never)
 							? (card.engine as CanvasNode["engine"])
 							: "pi",
 						model: card.model || graph.nodes[0]?.model || "pi/default",

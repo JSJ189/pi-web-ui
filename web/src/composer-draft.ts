@@ -56,7 +56,7 @@ export interface DraftAttachment {
 	 * "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）。
 	 * 粘贴图片/上传文件没有 mode（path 为空）。
 	 */
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote" | "canvas";
 	quote?: import("../../server/protocol.js").TextQuote;
 	/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 	conversationId?: string;
