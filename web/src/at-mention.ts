@@ -22,7 +22,7 @@ interface AtToken {
 interface AtAttachment {
 	path: string;
 	name?: string;
-	mode?: "inline" | "reference" | "lines" | "page";
+	mode?: "inline" | "reference" | "lines" | "page" | "canvas";
 	isDir?: boolean;
 	lines?: { start: number; end: number };
 }
@@ -208,6 +208,7 @@ export function mapSkillHits(
 export function mergeAtHits(
 	buckets: {
 		pages?: AtHit[];
+		canvases?: AtHit[];
 		skills?: AtHit[];
 		files?: AtHit[];
 		plugins?: AtHit[];
@@ -217,15 +218,16 @@ export function mergeAtHits(
 ): AtHit[] {
 	const q = String(query ?? "").toLowerCase();
 	const pages = buckets.pages ?? [];
+	const canvases = buckets.canvases ?? [];
 	const skills = buckets.skills ?? [];
 	const files = buckets.files ?? [];
 	const plugins = buckets.plugins ?? [];
 
 	let ordered: AtHit[];
 	if (q.startsWith(SKILL_NAMESPACE)) {
-		ordered = [...skills, ...pages, ...files, ...plugins];
+		ordered = [...skills, ...canvases, ...pages, ...files, ...plugins];
 	} else {
-		ordered = [...pages, ...skills, ...files, ...plugins];
+		ordered = [...canvases, ...pages, ...skills, ...files, ...plugins];
 	}
 
 	return ordered.slice(0, Math.max(0, totalCap));

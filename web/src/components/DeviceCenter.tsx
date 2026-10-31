@@ -15,6 +15,7 @@ import { withToken } from "../auth-token";
 import { useLocale, useT } from "../i18n";
 import { DeviceGroups } from "./DeviceGroups";
 import { LocalBots } from "./LocalBots";
+import { HubLink } from "./HubLink";
 import { DeviceCenterSetup } from "./DeviceCenterSetup";
 import { DeviceDirectory } from "./DeviceDirectory";
 import { useDeviceGroupNavigation } from "../device-group-navigation";
@@ -468,10 +469,10 @@ export function DeviceCenter({
 	const seconds = Math.max(0, Math.ceil(((pairing?.expiresAt ?? 0) - now) / 1000));
 	const remaining = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
 	const hubLink = link ? (
-		<a className="dc-button" href={link} target="_blank" rel="noopener noreferrer">
+		<HubLink href={link}>
 			<FiExternalLink aria-hidden />
 			{t("deviceHubOpenHub")}
-		</a>
+		</HubLink>
 	) : null;
 
 	return (
@@ -564,7 +565,7 @@ export function DeviceCenter({
 							}}
 						/>
 					)}
-					{bound && view === "overview" && (
+					{!localOnly && view === "overview" && (
 						<section className="dc-card">
 							<h3>{t("deviceSetupNext")}</h3>
 							<p>{t("deviceSetupNextHint")}</p>

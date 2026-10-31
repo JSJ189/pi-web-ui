@@ -2,6 +2,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { FiEdit2, FiPlus, FiRotateCcw, FiSend, FiTrash2, FiX } from "react-icons/fi";
 import { useT, type Translate } from "../i18n";
 import { randomUuid } from "../uuid";
+import { appUrl } from "../base-url";
+import { normalizeTemplateCommand, validTemplateCommand } from "../template-commands";
 import { appSend } from "../app-globals";
 import { recordModelUsage } from "../model-usage";
 
@@ -14,13 +16,14 @@ import { recordModelUsage } from "../model-usage";
 /*   - 模板库卡片 hover 直接出现 🗑（内置模板=移出模板库，自定义=删除）        */
 /*   - 点卡片打开编辑弹窗：改内容→保存修改；内置可移出、自定义可删除；        */
 /*   - 保存/删除后自动回到模板库列表，能看到变化。                           */
-/* 持久化在 localStorage（pi-web-ui:prompt-templates）。                  */
+/* 持久化在服务端 <dataDir>/prompt-templates.json；旧浏览器数据自动迁移。 */
 /* 灵感来自 https://www.aihero.dev/skills（Matt Pocock 的工程纪律技能）：  */
 /* 需求澄清 → 拆解计划 → TDD → 排错 → 架构 → 代码审查。                    */
 /* ------------------------------------------------------------------ */
 
 interface Template {
 	id: string;
+	command?: string;
 	icon: string;
 	/** 卡片上显示的短标题。 */
 	title: string;
@@ -38,6 +41,7 @@ interface Template {
  *  移出标记 { id, hidden: true }。 */
 interface StoredTemplate {
 	id: string;
+	command?: string;
 	icon?: string;
 	title?: string;
 	desc?: string;
@@ -309,8 +313,34 @@ export function TemplateProvider({
 	currentModelId: string | null;
 }) {
 	const t = useT();
-	/** 持久化的自定义 / 内置覆盖 / 内置移出标记。 */
-	const [stored, setStored] = useState<StoredTemplate[]>(loadStored);
+	/** 服务端持久化的自定义 / 内置覆盖 / 内置移出标记。 */
+	const [stored, setStored] = useState<StoredTemplate[]>([]);
+	const [storageError, setStorageError] = useState("");
+	const pendingWrite = useRef(false);
+	const storageGeneration = useRef(0);
+	const mutateStored = useCallback(async (body: object): Promise<boolean> => {
+		if (pendingWrite.current) return false;
+		pendingWrite.current = true;
+		storageGeneration.current++;
+		try {
+			const response = await fetch(appUrl("/api/prompt-templates"), {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify(body),
+			});
+			const data = await response.json();
+			if (!response.ok) throw new Error(data.error || response.statusText);
+			if (!Array.isArray(data.templates)) throw new Error("Invalid prompt templates response");
+			setStored(data.templates);
+			setStorageError("");
+			return true;
+		} catch (error) {
+			setStorageError(String(error));
+			return false;
+		} finally {
+			pendingWrite.current = false;
+		}
+	}, []);
 	/** 模板库（选择器）弹窗是否打开。 */
 	const [pickerOpen, setPickerOpen] = useState(false);
 	/** 正在编辑的模板（modal 工作副本）；null = 关闭。 */
@@ -322,14 +352,39 @@ export function TemplateProvider({
 	/** 编辑弹窗是否由模板库发起（保存/删除后应回到列表）。 */
 	const [fromPicker, setFromPicker] = useState(false);
 
-	// 持久化：localStorage 里存的是自定义 + 内置覆盖 + 移出标记。
+	// Server file is authoritative; legacy browser data is removed only after import succeeds.
 	useEffect(() => {
-		try {
-			localStorage.setItem(STORAGE_KEY, JSON.stringify(stored));
-		} catch {
-			/* storage 不可用则忽略 */
-		}
-	}, [stored]);
+		let disposed = false;
+		const refresh = async () => {
+			if (pendingWrite.current) return;
+			const generation = ++storageGeneration.current;
+			try {
+				const response = await fetch(appUrl("/api/prompt-templates"));
+				const data = await response.json();
+				if (!response.ok) throw new Error(data.error || response.statusText);
+				if (!Array.isArray(data.templates)) throw new Error("Invalid prompt templates response");
+				if (!disposed && !pendingWrite.current && generation === storageGeneration.current) setStored(data.templates);
+			} catch (error) {
+				if (!disposed) setStorageError(String(error));
+			}
+		};
+		void (async () => {
+			const legacy = loadStored();
+			if (legacy.length && (await mutateStored({ action: "migrate", templates: legacy }))) {
+				try {
+					localStorage.removeItem(STORAGE_KEY);
+				} catch {
+					/* import already committed */
+				}
+			}
+			await refresh();
+		})();
+		window.addEventListener("focus", refresh);
+		return () => {
+			disposed = true;
+			window.removeEventListener("focus", refresh);
+		};
+	}, [mutateStored]);
 
 	// 有效模板 = 内置（未移出，应用覆盖） + 自定义。
 	const templates = useMemo(() => {
@@ -347,6 +402,7 @@ export function TemplateProvider({
 				icon: o?.icon ?? d.icon,
 				title: o?.title ?? t(d.titleKey),
 				desc: o?.desc ?? t(d.descKey),
+				command: typeof o?.command === "string" ? o.command : "",
 				prompt: o?.prompt ?? t(d.promptKey),
 				builtin: true,
 			};
@@ -358,6 +414,7 @@ export function TemplateProvider({
 				icon: s.icon ?? "📌",
 				title: s.title ?? "",
 				desc: s.desc ?? "",
+				command: typeof s.command === "string" ? s.command : "",
 				prompt: s.prompt ?? "",
 			}));
 		return [...builtins, ...extras];
@@ -390,12 +447,12 @@ export function TemplateProvider({
 	}, []);
 	const toggleReset = useCallback(() => {
 		if (resetConfirm) {
-			setStored([]);
+			void mutateStored({ action: "reset" });
 			setResetConfirm(false);
 		} else {
 			setResetConfirm(true);
 		}
-	}, [resetConfirm]);
+	}, [resetConfirm, mutateStored]);
 	// 审查 #5：5s 复位走 effect（可在卸载/再次点击时清理，不再裸 setTimeout 悬挂）。
 	useEffect(() => {
 		if (!resetConfirm) return;
@@ -425,16 +482,8 @@ export function TemplateProvider({
 
 	// 保存：校验后的清理值写入 stored。
 	const saveEdit = useCallback(
-		(cleaned: Template) => {
-			setStored((prev) => {
-				const idx = prev.findIndex((c) => c.id === cleaned.id);
-				if (idx >= 0) {
-					const next = [...prev];
-					next[idx] = cleaned;
-					return next;
-				}
-				return [...prev, cleaned];
-			});
+		async (cleaned: Template) => {
+			if (!(await mutateStored({ action: "upsert", template: cleaned }))) return;
 			setEditing(null);
 			if (fromPicker) {
 				setPickerOpen(true);
@@ -446,14 +495,13 @@ export function TemplateProvider({
 
 	// 删除：自定义 = 移除；内置 = 移出模板库（打 hidden 标记，可在「恢复默认」找回）。
 	const removeTemplate = useCallback(
-		(tpl: Template) => {
-			setStored((prev) => {
-				if (tpl.builtin) {
-					const rest = prev.filter((c) => c.id !== tpl.id);
-					return [...rest, { id: tpl.id, hidden: true }];
-				}
-				return prev.filter((c) => c.id !== tpl.id);
-			});
+		async (tpl: Template) => {
+			if (
+				!(await mutateStored(
+					tpl.builtin ? { action: "upsert", template: { id: tpl.id, hidden: true } } : { action: "remove", id: tpl.id },
+				))
+			)
+				return;
 			setEditing(null);
 			if (fromPicker) {
 				setPickerOpen(true);
@@ -465,8 +513,8 @@ export function TemplateProvider({
 
 	// 恢复默认：撤掉内置模板的覆盖（保留在列表，显示内置默认；不取消移出标记）。
 	const restoreOverride = useCallback(
-		(tpl: Template) => {
-			setStored((prev) => prev.filter((c) => c.id !== tpl.id || c.hidden));
+		async (tpl: Template) => {
+			if (!(await mutateStored({ action: "remove", id: tpl.id }))) return;
 			setEditing(null);
 			if (fromPicker) {
 				setPickerOpen(true);
@@ -493,6 +541,11 @@ export function TemplateProvider({
 	return (
 		<TemplateCtx.Provider value={api}>
 			{children}
+			{storageError && (
+				<div className="template-error" role="alert">
+					{t("tpl.storageError")}: {storageError}
+				</div>
+			)}
 
 			{pickerOpen && (
 				<PickerModal
@@ -511,6 +564,8 @@ export function TemplateProvider({
 					editing={editing}
 					isNew={isNew}
 					hasOverride={hasOverride}
+					storageError={storageError}
+					templates={templates}
 					onDraft={setEditing}
 					onSave={saveEdit}
 					onRestore={() => restoreOverride(editing)}
@@ -701,6 +756,8 @@ function PickerModal({
 /* ------------------------------------------------------------------ */
 
 function EditModal({
+	storageError,
+	templates,
 	editing,
 	isNew,
 	hasOverride,
@@ -712,6 +769,8 @@ function EditModal({
 	onSend,
 	onClose,
 }: {
+	storageError: string;
+	templates: Template[];
 	editing: Template;
 	isNew: boolean;
 	hasOverride: boolean;
@@ -752,8 +811,21 @@ function EditModal({
 			onDraft({ ...editing, error: t("tpl.required") });
 			return;
 		}
+		const command = normalizeTemplateCommand(editing.command ?? "");
+		if (command && !validTemplateCommand(command)) {
+			onDraft({ ...editing, error: t("tpl.commandInvalid") });
+			return;
+		}
+		if (
+			command &&
+			templates.some((tpl) => tpl.id !== editing.id && normalizeTemplateCommand(tpl.command ?? "") === command)
+		) {
+			onDraft({ ...editing, error: t("tpl.commandDuplicate") });
+			return;
+		}
 		onSave({
 			id: editing.id,
+			command,
 			icon: editing.icon.trim() || "📌",
 			title,
 			desc: editing.desc.trim(),
@@ -808,6 +880,17 @@ function EditModal({
 					</label>
 
 					<label className="template-field">
+						<span className="template-field-label">{t("tpl.fieldCommand")}</span>
+						<input
+							className="template-field-input"
+							value={editing.command ?? ""}
+							placeholder="/pr"
+							onChange={(e) => onDraft({ ...editing, command: e.target.value, error: undefined })}
+						/>
+						<span className="template-picker-hint">{t("tpl.commandHint")}</span>
+					</label>
+
+					<label className="template-field">
 						<span className="template-field-label">{t("tpl.fieldPrompt")}</span>
 						<textarea
 							ref={taRef}
@@ -819,7 +902,11 @@ function EditModal({
 					</label>
 				</div>
 
-				{editing.error && <div className="template-error">{editing.error}</div>}
+				{(editing.error || storageError) && (
+					<div className="template-error" role="alert">
+						{editing.error || `${t("tpl.storageError")}: ${storageError}`}
+					</div>
+				)}
 
 				<div className="template-modal-actions">
 					<div className="template-modal-actions-left">

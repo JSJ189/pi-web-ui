@@ -327,6 +327,7 @@ const PRESET_FIELD_KINDS = {
 	toolWatchdogTimeoutMs: "number",
 	questionnaireEnabled: "bool",
 	questionPresentation: "questionPresentation",
+	toolApprovalPresentation: "questionPresentation",
 	questionTimeoutSeconds: "questionTimeout",
 	editSoftEnabled: "bool",
 	terminalToolsEnabled: "bool",

@@ -16,11 +16,12 @@ const sandbox = { id: "communication-boundary", path: root } as SandboxInfo;
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("communication catalog", () => {
-	it("has an independent default-on switch and a concise English fallback", () => {
+	it("has an independent default-on switch and localized help keys", () => {
 		const entry = AGENT_TOOL_CATALOG.find((tool) => tool.name === COMMUNICATE_TOOL_NAME)!;
 		expect(entry).toMatchObject({ group: "subagent", defaultOn: true, dshVisible: false });
 		expect(COMMUNICATE_TOOL_NAME).toBe("communicate");
-		expect(entry.descKey).toMatch(/Read your inbox, send messages/);
+		expect(entry.descKey).toBe("communicateEnabledDesc");
+		expect(entry.offHintKey).toBe("communicateOffHint");
 		expect(entry.descKey).not.toMatch(/[\u3400-\u9fff]/);
 		expect(entry.descKey!.length).toBeLessThan(600);
 		expect(normalizeDisabledAgentTools([COMMUNICATE_TOOL_NAME])).toEqual([COMMUNICATE_TOOL_NAME]);

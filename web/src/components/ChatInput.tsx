@@ -3,6 +3,7 @@ import { FiList, FiSquare, FiPaperclip, FiArrowUp, FiBookOpen, FiMic, FiCamera }
 import type { FileSearchResult, ModelInfo, ProviderKeyInfo, SlashCommandInfo, UiMessage, UiState } from "../types";
 import { isZhLocale, useT, useI18n } from "../i18n";
 import { appSend, useAppField, useIsDsh, useEngineCapabilities } from "../app-globals";
+import { mapCanvasHits, searchCanvasMentions } from "../canvas-mentions";
 import {
 	applyTemplateFill,
 	mergeRecalledDraft,
@@ -45,10 +46,19 @@ import { nextSearchReqId } from "../search-req-id";
 
 import { ModelThinking } from "./ModelThinking";
 import { groupDeviceHits, groupMessageTargets } from "../device-group-messages";
+import {
+	insertGroupMember,
+	registerGroupMemberSink,
+	updateGroupMemberReferences,
+	serializeGroupMemberReferences,
+	groupMemberDeletion,
+	type GroupMemberReference,
+} from "../group-member-reference";
 import { DshPresetBar, type DshPresetInfo } from "./DshPresetBar";
 import { DshPermissionBar } from "./DshPermissionBar";
 import type { DshPermissionOption, UiAgentPreset } from "../types";
 import { useTemplates } from "./PromptTemplates";
+import { availableTemplateCommands, expandTemplateCommand, normalizeTemplateCommand } from "../template-commands";
 import { TextQuoteCard } from "./TextQuoteCard";
 
 /** True on touch-first devices (phones / tablets driven by a soft keyboard) —
@@ -107,7 +117,7 @@ interface ChatInputProps {
 		 *  （运行中，含子代理）或 sessionPath（历史转录）。
 		 *  "inline" = 旧版「全文注入」的遗留值（服务端按 reference 处理）。
 		 *  粘贴图片/上传文件没有 mode（path 为空）。 */
-		mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+		mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote" | "canvas";
 		quote?: import("../types").TextQuote;
 		/** mode "conversation" + 引用运行中对话的 id（如 "c3"）。 */
 		conversationId?: string;
@@ -134,7 +144,7 @@ interface ChatInputProps {
 	onAddPathAttachment?: (a: {
 		path: string;
 		name: string;
-		mode?: "inline" | "reference" | "lines" | "page";
+		mode?: "inline" | "reference" | "lines" | "page" | "canvas";
 		isDir?: boolean;
 		lines?: { start: number; end: number };
 		silent?: boolean;
@@ -236,7 +246,16 @@ export const ChatInput = memo(function ChatInput({
 	const effectiveSendKey = useEffectiveSendKey(IS_TOUCH);
 	const isModEnter = effectiveSendKey === "mod-enter";
 	/** 打开模板库（对话中途也可随时取用提示词模板）。 */
-	const { openPicker } = useTemplates();
+	const { openPicker, templates } = useTemplates();
+	const commandTemplates = availableTemplateCommands(templates, slashCommands);
+	const allSlashCommands: SlashCommandInfo[] = [
+		...slashCommands,
+		...commandTemplates.map((tpl) => ({
+			name: normalizeTemplateCommand(tpl.command ?? ""),
+			description: tpl.desc || tpl.title,
+			source: "prompt" as const,
+		})),
+	];
 	const slashDesc = (c: SlashCommandInfo) =>
 		!isZhLocale(locale) && c.descriptionEn ? c.descriptionEn : (c.description ?? "");
 	const slashHint = (c: SlashCommandInfo) =>
@@ -492,8 +511,37 @@ export const ChatInput = memo(function ChatInput({
 
 	/** 用户一次键盘编辑：镜像 + L1 同步写 + L2 防抖。 */
 	const selectedGroupDevices = useRef(new Set<string>());
+	const groupReferences = useRef<GroupMemberReference[]>([]);
+	const groupReferenceText = useRef("");
+	useEffect(() => {
+		groupReferences.current = [];
+		groupReferenceText.current = textRef.current;
+		if (!groupDevices || !sessionId?.startsWith("device-group:")) return;
+		return registerGroupMemberSink(sessionId.slice("device-group:".length), (member) => {
+			const existing = groupReferences.current.find((ref) => ref.member.id === member.id);
+			if (existing) {
+				taRef.current?.focus();
+				return;
+			}
+			const ta = taRef.current;
+			const next = insertGroupMember(textRef.current, ta?.selectionStart ?? textRef.current.length, member);
+			groupReferences.current = updateGroupMemberReferences(textRef.current, next.text, groupReferences.current);
+			groupReferences.current.push({ start: next.cursor - member.name.length - 2, end: next.cursor - 1, member });
+			groupReferenceText.current = next.text;
+			textMirrorRef.current = next.text;
+			textRef.current = next.text;
+			menuTextRef.current = next.text;
+			setText(next.text);
+			requestAnimationFrame(() => {
+				taRef.current?.focus();
+				taRef.current?.setSelectionRange(next.cursor, next.cursor);
+			});
+		});
+	}, [sessionId, Boolean(groupDevices)]);
 	const noteComposerEdit = (value: string) => {
 		if (groupDevices) {
+			groupReferences.current = updateGroupMemberReferences(groupReferenceText.current, value, groupReferences.current);
+			groupReferenceText.current = value;
 			const present = new Set(groupMessageTargets(value, groupDevices));
 			for (const id of selectedGroupDevices.current) if (!present.has(id)) selectedGroupDevices.current.delete(id);
 		}
@@ -655,7 +703,7 @@ export const ChatInput = memo(function ChatInput({
 		if (m && ready && !groupDevices) {
 			const prefix = m[1].toLowerCase();
 			// skill 条目名是 `skill:<name>`，这里额外用裸名匹配（见 ../slash-filter）。
-			const matches = filterSlashCommands(slashCommands, prefix);
+			const matches = filterSlashCommands(allSlashCommands, prefix);
 			setMenu(matches.length > 0 ? { kind: "slash", items: matches } : null);
 			setMenuIndex(0);
 			return;
@@ -702,6 +750,12 @@ export const ChatInput = memo(function ChatInput({
 				return search(query);
 			},
 		}));
+		jobs.push({
+			id: "host:canvases",
+			label: t("canvasTab"),
+			run: async () =>
+				mapCanvasHits(await searchCanvasMentions(() => appSend({ type: "canvas_list" })), query, t("canvasTab")),
+		});
 		if (query && typeof onSearchFiles === "function") {
 			jobs.push({ id: "host:files", label: t("openFiles"), run: () => searchBuiltinFiles(query) });
 		}
@@ -737,17 +791,19 @@ export const ChatInput = memo(function ChatInput({
 			),
 		).then((results) => {
 			if (atReqRef.current !== req || menuTextRef.current !== snapshot) return;
+			const canvasItems: AtHit[] = [];
 			const pageItems: AtHit[] = [];
 			const fileItems: AtHit[] = [];
 			const pluginItems: AtHit[] = [];
 			results.forEach((r, i) => {
 				if (r.status !== "fulfilled") return;
 				if (jobs[i].id === "host:pages" && Array.isArray(r.value)) pageItems.push(...(r.value as AtHit[]));
+				else if (jobs[i].id === "host:canvases" && Array.isArray(r.value)) canvasItems.push(...(r.value as AtHit[]));
 				else if (jobs[i].id === "host:files") fileItems.push(...mapFileHits(jobs[i].label, r.value));
 				else pluginItems.push(...normalizeAtHits(jobs[i].id, jobs[i].label, r.value));
 			});
 			const items = mergeAtHits(
-				{ pages: pageItems, skills: skillItems, files: fileItems, plugins: pluginItems },
+				{ canvases: canvasItems, pages: pageItems, skills: skillItems, files: fileItems, plugins: pluginItems },
 				query,
 				30,
 			);
@@ -836,7 +892,11 @@ export const ChatInput = memo(function ChatInput({
 		const cursor = ta ? (ta.selectionStart ?? text.length) : text.length;
 		const replaceEnd = cur?.end !== undefined && cur.end >= at ? cur.end : cursor;
 		const atts = pick.attachments ?? [];
-		const rawText = pick.text ?? pick.title;
+		const groupMember =
+			groupDevices && pick.providerId === "host:group-devices"
+				? groupDevices.find((member) => member.id === pick.hint)
+				: undefined;
+		const rawText = groupMember ? `@${groupMember.name}` : (pick.text ?? pick.title);
 		if (groupDevices && pick.providerId === "host:group-devices" && pick.hint)
 			selectedGroupDevices.current.add(pick.hint);
 		// 附件型命中（文件/目录/页签…）统一插 `@提及` 形式：正文里的 `@x` 与附件 chip
@@ -846,6 +906,7 @@ export const ChatInput = memo(function ChatInput({
 		menuTextRef.current = next;
 		setText(next);
 		noteComposerEdit(next);
+		if (groupMember) groupReferences.current.push({ start: at, end: at + rawText.length, member: groupMember });
 		setMenu(null);
 		for (const a of atts) {
 			try {
@@ -1140,7 +1201,7 @@ export const ChatInput = memo(function ChatInput({
 				mode: a.mode,
 				...(a.lines ? { lines: a.lines } : {}),
 				// 网页引用：标题要一起送（服务端不读文件，用标题当卡片名）。
-				...(a.mode === "page" ? { name: a.name } : {}),
+				...(a.mode === "page" || a.mode === "canvas" ? { name: a.name } : {}),
 				// 对话引用：id/path 二选一 + 标题（服务端只发 <conversation-ref>，转录由 AI 按需读）。
 				...(a.mode === "conversation"
 					? {
@@ -1195,14 +1256,19 @@ export const ChatInput = memo(function ChatInput({
 		if (groupDevices) {
 			if (!onGroupSend || groupSending.current) return;
 			groupSending.current = true;
-			void onGroupSend(
-				trimmed,
-				groupMessageTargets(trimmed, groupDevices).filter((id) => selectedGroupDevices.current.has(id)),
-			)
+			const serialized = serializeGroupMemberReferences(text, groupReferences.current);
+			void onGroupSend(serialized.text.trim(), [
+				...new Set([
+					...serialized.targets,
+					...groupMessageTargets(trimmed, groupDevices).filter((id) => selectedGroupDevices.current.has(id)),
+				]),
+			])
 				.then((ok) => {
 					if (ok && textMirrorRef.current.trim() === trimmed) {
 						setText("");
 						selectedGroupDevices.current.clear();
+						groupReferences.current = [];
+						groupReferenceText.current = "";
 						clearDraftAfterConsume();
 						onSent();
 					}
@@ -1251,7 +1317,7 @@ export const ChatInput = memo(function ChatInput({
 		if (
 			appSend({
 				type: "prompt",
-				text: trimmed,
+				text: expandTemplateCommand(trimmed, commandTemplates),
 				queue,
 				attachments: buildPromptAttachments(),
 			})
@@ -1342,6 +1408,21 @@ export const ChatInput = memo(function ChatInput({
 		// 退格键原子化整块删除 @提及 并联动摘掉对应附件 chip（文件/目录/页签同一套）。
 		// 逻辑收敛在纯函数 resolveBackspaceMention（单测锁定）：优先按最长相对路径精确匹配，
 		// 彻底杜绝同名 basename（如 根目录报告 vs 方案/报告）退格误删。
+		if (groupDevices && (e.key === "Backspace" || e.key === "Delete") && !e.nativeEvent.isComposing) {
+			const ta = taRef.current;
+			if (ta) {
+				const range = groupMemberDeletion(text, ta.selectionStart, ta.selectionEnd, e.key, groupReferences.current);
+				if (range) {
+					e.preventDefault();
+					const next = text.slice(0, range.start) + text.slice(range.end);
+					noteComposerEdit(next);
+					setText(next);
+					textRef.current = next;
+					requestAnimationFrame(() => ta.setSelectionRange(range.start, range.start));
+					return;
+				}
+			}
+		}
 		if (e.key === "Backspace" && !e.ctrlKey && !e.metaKey && !e.altKey) {
 			const ta = taRef.current;
 			if (ta && ta.selectionStart === ta.selectionEnd && ta.selectionStart > 0) {
@@ -1704,17 +1785,19 @@ export const ChatInput = memo(function ChatInput({
 												? t("folderRef", { path: a.path })
 												: a.mode === "page"
 													? t("attachPage", { name: a.name })
-													: a.mode === "conversation"
-														? t("attachConversation", { name: a.name })
-														: a.mode === "reference"
-															? t("refOnly", { path: a.path })
-															: a.mode === "lines" && a.lines
-																? t("attachLines", {
-																		path: a.path,
-																		start: a.lines.start,
-																		end: a.lines.end,
-																	})
-																: t("attachContent", { path: a.path })
+													: a.mode === "canvas"
+														? `${t("canvasTab")} · ${a.name}`
+														: a.mode === "conversation"
+															? t("attachConversation", { name: a.name })
+															: a.mode === "reference"
+																? t("refOnly", { path: a.path })
+																: a.mode === "lines" && a.lines
+																	? t("attachLines", {
+																			path: a.path,
+																			start: a.lines.start,
+																			end: a.lines.end,
+																		})
+																	: t("attachContent", { path: a.path })
 								}
 							>
 								{a.imageData
@@ -1725,11 +1808,13 @@ export const ChatInput = memo(function ChatInput({
 											? "📁"
 											: a.mode === "page"
 												? "🌐"
-												: a.mode === "conversation"
-													? "💬"
-													: a.mode === "reference"
-														? "🔗"
-														: "📎"}
+												: a.mode === "canvas"
+													? "◇"
+													: a.mode === "conversation"
+														? "💬"
+														: a.mode === "reference"
+															? "🔗"
+															: "📎"}
 								{a.name}
 								{a.mode === "lines" && a.lines && (
 									<span className="attach-range">
@@ -1816,10 +1901,10 @@ export const ChatInput = memo(function ChatInput({
 							</button>
 						</div>
 						<div className="slash-help-body">
-							{slashCommands.length === 0 ? (
+							{allSlashCommands.length === 0 ? (
 								<div className="slash-help-empty">{t("slashLoading")}</div>
 							) : (
-								slashCommands.map((c) => (
+								allSlashCommands.map((c) => (
 									<div className="slash-help-row" key={c.name}>
 										<span className="slash-help-cmd">/{c.name}</span>
 										<span className={`slash-source ${c.source}`}>{SOURCE_LABEL[c.source]}</span>

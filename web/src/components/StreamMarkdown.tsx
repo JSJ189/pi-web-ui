@@ -115,8 +115,15 @@ export function useSmoothStreamText(text: string, active = true, finishing = fal
 			return;
 		}
 		if (text.length < lenRef.current) {
+			// A final snapshot may trim or replace streamed text. The buffer is
+			// already caught up after this reset, so settle even without another frame.
+			if (rafIdRef.current) {
+				cancelAnimationFrame(rafIdRef.current);
+				rafIdRef.current = 0;
+			}
 			lenRef.current = text.length;
 			setDisplayedLen(text.length);
+			onSettledRef.current?.();
 			return;
 		}
 		if (lenRef.current >= text.length) {

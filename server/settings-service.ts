@@ -581,6 +581,7 @@ export class SettingsService {
 				subagentDefaultModel: this.settings.subagentDefaultModel ?? null,
 				subagentMaxDepth: this.settings.subagentMaxDepth ?? 0,
 				questionPresentation: this.settings.questionPresentation ?? "queue",
+				toolApprovalPresentation: this.settings.toolApprovalPresentation ?? "all",
 				questionTimeoutSeconds: this.settings.questionTimeoutSeconds ?? 240,
 				subagentAutoWakeMaxTurns: this.settings.subagentAutoWakeMaxTurns ?? defaultSubagentAutoWakeMaxTurns(),
 				steeringMode: this.settings.steeringMode,
@@ -677,6 +678,7 @@ export class SettingsService {
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		questionPresentation?: "queue" | "all" | "manual";
+		toolApprovalPresentation?: "queue" | "all" | "manual";
 		questionTimeoutSeconds?: number;
 		/** 同项目并行提醒开关（默认开；纯运行开关，下一轮即生效，无需 reload）。 */
 		parallelReminderEnabled?: boolean;
@@ -958,6 +960,11 @@ export class SettingsService {
 			if (!["queue", "all", "manual"].includes(partial.questionPresentation))
 				throw new Error("Invalid questionnaire presentation");
 			next.questionPresentation = partial.questionPresentation;
+		}
+		if (partial.toolApprovalPresentation !== undefined) {
+			if (!["queue", "all", "manual"].includes(partial.toolApprovalPresentation))
+				throw new Error("Invalid tool approval presentation");
+			next.toolApprovalPresentation = partial.toolApprovalPresentation;
 		}
 		if (partial.questionTimeoutSeconds !== undefined) {
 			const seconds = partial.questionTimeoutSeconds;

@@ -118,13 +118,18 @@ function taskLine(t: SchedulerTaskView, lang: ServerLang): string {
 				? "启用"
 				: "on";
 	const once = t.oneShot ? (lang === "zh" ? " · 单次" : " · one-shot") : "";
-	const target = t.conversationId
-		? lang === "zh"
-			? ` · 汇报→对话${t.conversationId}`
-			: ` · reports→${t.conversationId}`
-		: lang === "zh"
-			? " · 无头执行"
-			: " · headless";
+	const target =
+		t.target === "canvas"
+			? lang === "zh"
+				? ` · 画布→${t.graphId}`
+				: ` · canvas→${t.graphId}`
+			: t.conversationId
+				? lang === "zh"
+					? ` · 汇报→对话${t.conversationId}`
+					: ` · reports→${t.conversationId}`
+				: lang === "zh"
+					? " · 无头执行"
+					: " · headless";
 	const last = t.lastRun
 		? lang === "zh"
 			? ` · 上次${t.lastRun.ok ? "成功" : `失败（${t.lastRun.error ?? "未知错误"}）`}`
@@ -159,12 +164,13 @@ export function makeScheduleTool(
 
 	return defineTool({
 		name: SCHEDULE_TOOL_NAME,
-		label: "Manage scheduled wake-ups",
+		label: "Manage scheduled tasks",
 		description:
-			"Create, list, or cancel built-in scheduled wake-ups in the CURRENT conversation: on create your prompt is delivered " +
-			"back into this conversation at the cron time or after the delay you give, so you continue and report. One-shot by default; recurring=true repeats. " +
-			"Survives compaction/restart; if the conversation is gone it falls back to the project's active conversation when one exists, headless otherwise.",
-		promptSnippet: "create/list/cancel scheduled wake-ups",
+			"Create, list, or cancel persistent scheduled tasks. Without graphId, delivers a required prompt to the current conversation; " +
+			"if unavailable, falls back to the project's active conversation or a headless run. With graphId, runs that existing canvas; " +
+			"prompt is optional and otherwise uses the graph's input. Canvas tasks do not bind a conversation or override node models. " +
+			"One-shot by default; recurring=true repeats. Minimum delay 60s.",
+		promptSnippet: "Create, list, or cancel conversation or canvas schedules",
 		promptGuidelines: [
 			"Use action=create for periodic checks, delayed reminders, and scheduled summaries — never sleep loops (they cannot push messages back)",
 			"Use action=list to inspect existing tasks and action=cancel to stop one by id",
@@ -181,10 +187,15 @@ export function makeScheduleTool(
 						'create: when to fire — 5-field cron ("0 * * * *" hourly) or relative delay ("in 30m", "in 1h", "30m"). Minimum 60s.',
 				}),
 			),
+			graphId: Type.Optional(
+				Type.String({
+					description: "create: existing canvas graph id; when provided, targets the canvas instead of a conversation.",
+				}),
+			),
 			prompt: Type.Optional(
 				Type.String({
 					description:
-						"create: instruction delivered into this conversation on fire (e.g. what to check and report). Max 8000 chars.",
+						"create: instruction for the conversation or canvas. Required for conversations; omit for canvas to use graph input. Max 8000 chars.",
 				}),
 			),
 			label: Type.Optional(
@@ -240,8 +251,10 @@ export function makeScheduleTool(
 							),
 						);
 					}
+					const isCanvas = p.graphId !== undefined;
+					const graphId = String(p.graphId ?? "").trim();
 					const prompt = String(p.prompt ?? "").trim();
-					if (!prompt) {
+					if (!prompt && !isCanvas) {
 						return text(
 							pick(
 								getLang(),
@@ -263,14 +276,16 @@ export function makeScheduleTool(
 						);
 					}
 					const labelRaw = typeof p.label === "string" ? p.label.trim().slice(0, 80) : "";
-					const name = labelRaw || prompt.split("\n")[0]!.slice(0, 40) || "定时任务";
+					const name = labelRaw || prompt.split("\n")[0]!.slice(0, 40) || (isCanvas ? `Canvas ${graphId}` : "定时任务");
 					const convId = (ownerConversationId ?? "").trim() || String(host.activeConversationId() ?? "").trim();
 					// 稳定绑定（issue #231）：owner 对话的落盘会话文件 —— 压缩/重启后靠它重认同一会话，
 					// 内存对话 id（c1/c2…）只做首选唤醒键。宿主没实现 conversationInfo 时按原来只绑 id。
 					let bindCwd = cwd;
 					let bindSessionFile = "";
 					try {
-						const info = host.conversationInfo?.((ownerConversationId ?? "").trim() || convId || undefined);
+						const info = isCanvas
+							? undefined
+							: host.conversationInfo?.((ownerConversationId ?? "").trim() || convId || undefined);
 						if (info) {
 							if (String(info.cwd ?? "").trim()) bindCwd = String(info.cwd).trim();
 							bindSessionFile = String(info.sessionFile ?? "")
@@ -285,6 +300,8 @@ export function makeScheduleTool(
 					try {
 						task = store.upsert({
 							name,
+							target: isCanvas ? "canvas" : "conversation",
+							...(isCanvas ? { graphId } : {}),
 							cwd: bindCwd,
 							kind: parsed.kind,
 							spec: parsed.spec,
@@ -310,13 +327,17 @@ export function makeScheduleTool(
 						L === "zh"
 							? `触发：${parsed.kind === "cron" ? `cron ${parsed.spec}` : describeIntervalMs(Number(parsed.spec))}，下次 ${fmtTime(next, L)}${recurring ? "（周期）" : "（单次，触发后自动删除）"}`
 							: `Fires: ${parsed.kind === "cron" ? `cron ${parsed.spec}` : `every ${Math.round(Number(parsed.spec) / 1000)}s`}, next ${fmtTime(next, L)}${recurring ? " (recurring)" : " (one-shot, auto-deleted after firing)"}`;
-					const targetLine = convId
+					const targetLine = isCanvas
 						? L === "zh"
-							? `汇报：触发时自动唤醒本对话（${convId}）；压缩/重启后按会话文件自动重绑，原对话不在时先回落同项目活跃对话（明确提示），无存活对话才无头执行。`
-							: `Reports: wakes this conversation (${convId}) on fire; re-binds by session file after compaction/restart, falls back to the project's active conversation (with a visible note), headless only with no live conversation.`
-						: L === "zh"
-							? "汇报：无头执行，报告进调度面板历史（创建时没拿到对话 id）。"
-							: "Reports: headless run, report in panel history (no conversation id captured at creation).";
+							? `目标：画布 ${graphId}；${prompt ? "使用提供的触发指令" : "使用图自带输入"}，模型由画布节点配置。`
+							: `Target: canvas ${graphId}; ${prompt ? "uses the supplied instruction" : "uses the graph's input"}, with models configured by canvas nodes.`
+						: convId
+							? L === "zh"
+								? `汇报：触发时自动唤醒本对话（${convId}）；压缩/重启后按会话文件自动重绑，原对话不在时先回落同项目活跃对话（明确提示），无存活对话才无头执行。`
+								: `Reports: wakes this conversation (${convId}) on fire; re-binds by session file after compaction/restart, falls back to the project's active conversation (with a visible note), headless only with no live conversation.`
+							: L === "zh"
+								? "汇报：无头执行，报告进调度面板历史（创建时没拿到对话 id）。"
+								: "Reports: headless run, report in panel history (no conversation id captured at creation).";
 					const tail =
 						L === "zh"
 							? `取消：schedule(action="cancel", id="${task.id}")，或后台任务面板手动取消；查看：schedule(action="list")。`

@@ -43,6 +43,7 @@ import { ModelAdminService } from "../model-admin.js";
 import { WebUIContext } from "../webui-context.js";
 import type { BaseAgentDriver, AgentEventSink, AgentTurnMeta } from "./driver-base.js";
 import { ClaudeCodeDriver, probeClaudeCode } from "./drivers/claude-code.js";
+import { CodexDriver, probeCodex } from "./drivers/codex.js";
 import type { UniversalSessionStore } from "./session-store.js";
 import type { UniversalConversation } from "./universal-types.js";
 import { type ClientStateStore, normalizeUiLayout, type ClientSettings, settingsPresetToUi } from "../client-state.js";
@@ -380,6 +381,9 @@ export class UniversalSession implements DispatchSession {
 		if (opts.driver.id === "claude-code") {
 			this.currentModel = "claude-3-7-sonnet-20250219";
 			this.seedDefaultClaudeModels();
+		} else if (opts.driver.id === "codex") {
+			this.currentModel = "default";
+			this.thinkingLevel = "medium";
 		} else if (opts.driver.id === "dsh") {
 			this.currentModel = "deepseek/deepseek-v4-flash";
 			this.thinkingLevel = "high";
@@ -461,6 +465,19 @@ export class UniversalSession implements DispatchSession {
 		// 记录当前客户端访问的工作区
 		if (typeof this.stateStore?.remember === "function" && this.cwd) {
 			this.stateStore.remember(this.clientId, this.cwd);
+		}
+
+		if (this.driver instanceof CodexDriver) {
+			void probeCodex()
+				.then((probe) => {
+					if (!probe.available && !this.disposed)
+						this.emitNotice(
+							"warning",
+							"Codex CLI 未安装，请运行 npm i -g @openai/codex 并完成 codex login。",
+							"Codex CLI not found; run npm i -g @openai/codex and codex login.",
+						);
+				})
+				.catch(() => {});
 		}
 
 		// 若驱动为 Claude Code，异步探测环境并下发安装指引
@@ -891,6 +908,10 @@ export class UniversalSession implements DispatchSession {
 
 			// 4. 构建 AgentEventSink（时序保真：思考 -> 前置正文 -> 工具调用 -> 总结正文）
 			const sink: AgentEventSink = {
+				onSessionStarted: (sessionId) => {
+					conv.driverSessionId = sessionId;
+					if (!conv.isEphemeral) this.store.saveConversation(turn.cwd, conv);
+				},
 				onThinkingDelta: (delta: string) => {
 					this.streamingThinking += delta;
 					if (!this.streamingMessage) return;
@@ -3013,6 +3034,10 @@ export class UniversalSession implements DispatchSession {
 		conv.messages.push(assistantMsg);
 
 		const sink: AgentEventSink = {
+			onSessionStarted: (sessionId) => {
+				conv.driverSessionId = sessionId;
+				if (!conv.isEphemeral) this.store.saveConversation(cwd, conv);
+			},
 			onThinkingDelta: (delta: string) => {
 				thinkingText += delta;
 				let thinkBlock = assistantMsg.content.find((b) => b.type === "thinking") as UiThinkingBlock | undefined;

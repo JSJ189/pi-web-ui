@@ -1417,7 +1417,7 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 	const details = (message.details ?? {}) as {
 		name?: string;
 		path?: string;
-		mode?: "inline" | "reference" | "lines" | "image" | "bridged" | "page" | "conversation";
+		mode?: "inline" | "reference" | "lines" | "image" | "bridged" | "page" | "conversation" | "canvas";
 		size?: number;
 		lines?: number;
 		startLine?: number;
@@ -1426,7 +1426,8 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 	};
 	const name = details.name ?? details.path ?? t("attachment");
 	const isFolder = details.type === "folder";
-	const isReference = details.mode === "reference";
+	const isCanvas = details.mode === "canvas";
+	const isReference = details.mode === "reference" || isCanvas;
 	const isBridged = details.mode === "bridged";
 	const isPage = details.mode === "page";
 	const isConversation = details.mode === "conversation";
@@ -1457,7 +1458,7 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 						<span className="chead-toggle">{shown ? <FiChevronDown /> : <FiChevronRight />}</span>
 					) : null
 				}
-				icon={isFolder ? "📁" : isPage ? "🌐" : isConversation ? "💬" : "📎"}
+				icon={isCanvas ? "◈" : isFolder ? "📁" : isPage ? "🌐" : isConversation ? "💬" : "📎"}
 				iconClassName="attachcard-icon"
 				titleClassName="attachcard-name"
 				after={
@@ -1473,24 +1474,26 @@ function AttachmentCard({ message, forceOpen = false }: { message: UiMessage; fo
 						<span
 							className={`attachcard-mode ${details.mode === "lines" ? "lines" : isReference ? "ref" : isPage ? "page" : isConversation ? "conversation" : isBridged ? "bridged" : "inline"}`}
 						>
-							{isPage
-								? t("attachPageShort")
-								: isConversation
-									? t("attachConversationShort")
-									: isReference
-										? isFolder
-											? t("folderRefShort")
-											: `${t("refOnlyShort")} · ${formatSize(details.size)}`
-										: isBridged
-											? t("bridgedVision")
-											: image
-												? t("image")
-												: details.mode === "lines"
-													? t("inlineLinesRange", {
-															start: details.startLine ?? 1,
-															end: details.endLine ?? details.lines ?? 1,
-														})
-													: t("inlineLines", { n: details.lines ?? lines })}
+							{isCanvas
+								? t("canvasTab")
+								: isPage
+									? t("attachPageShort")
+									: isConversation
+										? t("attachConversationShort")
+										: isReference
+											? isFolder
+												? t("folderRefShort")
+												: `${t("refOnlyShort")} · ${formatSize(details.size)}`
+											: isBridged
+												? t("bridgedVision")
+												: image
+													? t("image")
+													: details.mode === "lines"
+														? t("inlineLinesRange", {
+																start: details.startLine ?? 1,
+																end: details.endLine ?? details.lines ?? 1,
+															})
+														: t("inlineLines", { n: details.lines ?? lines })}
 						</span>
 						{canCopy && (
 							<button

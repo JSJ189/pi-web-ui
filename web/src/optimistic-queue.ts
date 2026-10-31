@@ -120,6 +120,12 @@ export function formatOptimisticQueuedPrompt(text: string, attachments?: readonl
 			textAsides.push(`<browser-page url="${escapeXmlAttr(url)}" title="${escapeXmlAttr(title)}"></browser-page>`);
 			continue;
 		}
+		if (att.mode === "canvas") {
+			textAsides.push(
+				`<canvas-ref id="${escapeXmlAttr(att.path)}" title="${escapeXmlAttr(att.name || att.path)}"></canvas-ref>`,
+			);
+			continue;
+		}
 		if (att.mode === "conversation") {
 			const title = att.name || att.conversationId || att.sessionPath || "conversation";
 			textAsides.push(`<conversation-ref title="${escapeXmlAttr(title)}"></conversation-ref>`);

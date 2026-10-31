@@ -20,7 +20,7 @@ import { readTextQuote } from "../../server/text-quote.js";
 /** PromptAttachment 的结构化镜像（与 server/protocol.ts 一致）。 */
 export interface EditPromptAttachment {
 	path: string;
-	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote";
+	mode?: "inline" | "reference" | "lines" | "page" | "conversation" | "quote" | "canvas";
 	quote?: import("../../server/protocol.js").TextQuote;
 	conversationId?: string;
 	sessionPath?: string;
@@ -95,8 +95,8 @@ function parseFileCardAttachment(msg: { content: readonly unknown[]; details?: u
 	}
 	// 3) Granted web page (page-picker 的「引用到对话」)：`path` 是页面 origin、
 	//    name 是标题；扩展的授权表与工作区无关，所以原样重发即可，服务端不读文件。
-	if (details.mode === "page" && details.path) {
-		return { path: details.path, mode: "page", name: details.name ?? details.path };
+	if ((details.mode === "page" || details.mode === "canvas") && details.path) {
+		return { path: details.path, mode: details.mode, name: details.name ?? details.path };
 	}
 	// 3b) Quoted conversation（对话引用 chip）：path 是 id/path 展示串，
 	//     真引用走 conversationId/sessionPath；重发即重新读取最新转录。

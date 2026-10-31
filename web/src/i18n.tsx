@@ -131,6 +131,8 @@ export const zh = {
 	settingsEngineDshDesc: "轻量级代码编辑循环、hashline 补丁引擎、Agent 预设与三档权限控制，基于通用底座驱动",
 	settingsEngineClaudeTitle: "CLAUDE",
 	settingsEngineClaudeDesc: "Anthropic 官方编码智能体，基于通用底座驱动，开箱即用",
+	settingsEngineCodexTitle: "CODEX",
+	settingsEngineCodexDesc: "OpenAI 官方编码智能体，使用本机 Codex CLI 登录与配置",
 	settingsEngineDurableTitle: "DURABLE",
 	settingsEngineDurableDesc: "基于事件溯源与事务化持久化（SQLite/WAL）的长任务自愈执行引擎，支持原生任务图与插话纠错",
 	engineTagUniversal: "通用驱动 · Claude",
@@ -1017,6 +1019,8 @@ export const zh = {
 	presetTagCloud: "云端",
 	presetTagLocal: "本地",
 	presetTagProxy: "反代",
+	engineCodexModelDesc:
+		"当前由 Codex CLI 引擎驱动，使用本机 codex 登录状态与 ~/.codex/config.toml 配置。模型与推理强度通过当前会话的选择器设置；此页服务商密钥不会注入 Codex。",
 	engineClaudeModelDesc:
 		"当前由 Claude Code CLI 引擎驱动。您在「模型与服务商」中配置的 Anthropic 兼容端点 BaseURL、API 密钥以及自定义中转模型，将自动注入到 Claude CLI 子进程中运行（无需外部 cc-switch 工具）。",
 	engineDshModelDesc:
@@ -1085,6 +1089,12 @@ export const zh = {
 	"tpl.fieldPrompt": "提示词",
 	"tpl.fieldPromptPh": "完整提示词 —— 发送给智能体的内容",
 	"tpl.required": "标题和提示词不能为空",
+	"tpl.fieldCommand": "快捷命令（可选）",
+	"tpl.commandHint":
+		"例如 /pr：输入 /pr 798 后发送，798 会替换正文中的 {{input}}；没有占位符时追加到末尾。已有系统或技能命令优先。模板保存在服务端本地文件。",
+	"tpl.commandInvalid": "命令须以英文字母开头，只能包含字母、数字、下划线和连字符",
+	"tpl.commandDuplicate": "该命令已被其他模板使用",
+	"tpl.storageError": "模板读取或保存失败",
 	"tpl.save": "保存修改",
 	"tpl.fill": "填入输入框",
 	"tpl.fillTip": "填入输入框，可再编辑后发送",
@@ -1430,12 +1440,36 @@ export const zh = {
 	deviceSetupCreate: "创建我的中心",
 	deviceSetupTarget: "中心部署在哪里",
 	deviceSetupCurrent: "当前承载服务的机器",
-	deviceSetupRemote: "已有服务器",
-	deviceSetupNoServer: "我还没有服务器",
-	deviceSetupNoServerHint:
-		"可以连接他人提供的中心，或准备一台持续运行的电脑、VPS 或服务器。其他设备必须能访问中心地址。",
+	deviceSetupRemote: "远程服务器",
 	deviceSetupCurrentHint: "安装目标是运行当前 pi-web-ui 服务的机器，不一定是使用浏览器的电脑。",
-	deviceSetupRemoteHint: "先确认目标服务器的系统、Node.js 和网络环境。下面的配置仅提供给部署对话，不会远程执行命令。",
+	deviceSetupRemoteHint:
+		"填写服务器连接信息和中心端口，默认通过 HTTP 部署。AI 将检查环境、引导安装，并提示需要你完成的操作。",
+	deviceSetupServer: "服务器 IP / 主机名",
+	deviceSetupSshPort: "SSH 登录端口",
+	deviceSetupUsername: "登录账号",
+	deviceSetupAuth: "认证方式",
+	deviceSetupAuthPassword: "密码（在 SSH 安全终端输入）",
+	deviceSetupAuthKey: "SSH 密钥",
+	deviceSetupAuthExisting: "已有 SSH 连接",
+	deviceSetupServicePort: "中心访问端口（1024–65535）",
+	deviceSetupCredentialHint:
+		"当前入口会创建 AI 部署对话。密码或私钥请在后续 SSH 安全终端中使用，不要发到聊天中；页面暂不直接建立 SSH 连接。",
+	deviceSetupOptionalTls: "可选：域名与 HTTPS",
+	deviceSetupDomain: "域名（可选，不含协议或路径）",
+	deviceSetupEnableHttps: "启用 HTTPS",
+	deviceSetupTlsHint: "HTTPS 需要域名、DNS 指向和证书配置。默认通过服务器 IP + HTTP 部署；公网长期使用建议开启 HTTPS。",
+	deviceSetupPreview: "部署后访问地址：",
+	deviceSetupPreviewEmpty: "填写服务器信息后自动生成",
+	deviceSetupUserActions: "需要你准备的操作",
+	deviceSetupCloudPorts:
+		"在云服务器控制台找到该实例的安全组 / 防火墙，允许入站 TCP {ports}。服务器系统防火墙也需放行。AI 会按实际部署方案确认规则；保留原有 SSH 访问。",
+	deviceSetupSourceScope:
+		"来源优先填写设备出口 IP / CIDR；需要任意网络连接时才选 0.0.0.0/0。HTTPS 的 80 端口按证书验证方案决定，同机代理下中心内部端口不必对公网开放。",
+	deviceSetupAfterStart:
+		"服务启动后，AI 将提示你打开中心创建账号，再连接设备。等待你放行端口时保留进度，完成后继续验证外部访问。",
+	deviceSetupGuide: "查看完整部署指南",
+	deviceSetupRemoteInvalid: "请填写有效的服务器地址、登录账号、SSH 端口及中心端口；启用 HTTPS 时还需填写域名。",
+	deviceSetupStartAi: "开始 AI 辅助部署",
 	deviceSetupPlan: "安装方案（执行前确认）",
 	deviceSetupPlanHint:
 		"默认监听 127.0.0.1:8790，仅本机可访问；使用独立数据目录，安装自启动服务，允许注册以创建首个账号。可在下方修改配置。",
@@ -1452,8 +1486,7 @@ export const zh = {
 	deviceSetupRegistration: "此方案允许账号注册。创建首个账号后，请按使用范围管理注册权限。",
 	deviceSetupInvalid:
 		"请填写合法的 localhost / IP、1024–65535 端口及 HTTP(S) origin 地址，不得带凭据、路径、查询或片段。",
-	deviceSetupCliHint:
-		"在目标服务器安装 pi-web-ui 后运行此示例。--host 0.0.0.0 监听所有 IPv4 网卡；--port 8790 指定端口。将 https://hub.example.com 替换为设备实际可达地址，并配置代理与防火墙。--allow-registration 允许创建首个账号。",
+
 	deviceSetupInstalling: "正在安装，请等待…",
 	deviceSetupInstall: "一键安装并连接",
 	deviceSetupAi: "让 AI 辅助部署",
@@ -1713,8 +1746,14 @@ export const zh = {
 	questionQueueOpen: "回答",
 	questionQueueNavigate: "查看来源对话",
 	questionQueueDefer: "稍后回答",
+	pendingQueueDefer: "稍后处理",
 	questionPresentation: "问卷提醒方式",
-	questionPresentationDesc: "当前项目的问卷统一排队。稍后回答会保留问卷和填写草稿。",
+	questionPresentationDesc:
+		"当前对话弹出：只自动打开正在查看的对话的问卷，其他进入队列。全部自动弹出：当前项目所有对话的问卷依次弹出。仅队列：不自动弹出，需要手动打开。稍后回答会保留问卷和草稿。",
+	toolApprovalPresentation: "工具审批提醒方式",
+	toolApprovalPresentationDesc:
+		"当前对话弹出：只自动打开正在查看的对话的审批，其他进入队列。全部自动弹出：当前项目所有对话的审批依次弹出。仅队列：不自动弹出，需要手动打开。此设置只控制提醒，不会自动批准或拒绝操作。",
+	toolApprovalPresentationAll: "所有对话的审批自动弹出",
 	questionPresentationQueue: "当前对话弹出，其他进入队列",
 	questionPresentationAll: "所有对话的问卷自动弹出",
 	questionPresentationManual: "仅队列，手动打开",
@@ -1805,7 +1844,10 @@ export const zh = {
 		"把定义清楚的任务派给 specialist 子代理模板：六段派单（TASK/EXPECTED OUTCOME/REQUIRED TOOLS/MUST DO/MUST NOT DO/CONTEXT）在服务端校验，缺段或含糊直接报错打回。执行体复用子代理 spawn 通道。",
 	delegateTaskOffHint: "已关闭：AI 无法使用 delegate_task 派单（可用 subagent 自由派单，不带六段校验）",
 	toolDescSubagent:
-		"子代理及持久对话管理（左栏可见，旧名 subagent 兼容）：统一支持 spawn（派发）、wait_all（等待收口）、get_result（查询结果）、steer（改向追加）、stop（中止）、list（运行态）、templates（模板名录）、handoff（同行协作）。",
+		"管理子代理与持久对话（旧名 subagent 兼容）：派发、等待、查询结果、改向、停止、查看对话和模板，并用 complete 登记任务完成。对话间发消息、请示和回复使用独立的 communicate 工具；旧交接、请示入口仅作兼容。",
+	communicateEnabledDesc:
+		"对话间沟通：读取收件箱和可达对话地址、发送进度或交接消息、请求回答、回复请求，或将收到的请求升级给用户。支持同项目内的父子、同级及其他对话；发送消息不会结束任务，任务完成使用 conversation complete。",
+	communicateOffHint: "关闭后，AI 无法使用 communicate；对话管理 conversation 的开关独立控制。",
 	toolDescSubagentSpawn: "后台起独立子代理对话（左栏可见），做可独立交付的任务；可并行多个。",
 	toolDescSubagentGetResult: "取单个子代理的结果或当前进度；未完成返回现状和部分输出。",
 	toolDescSubagentSteer: "向运行中的子代理注入消息，改向或补充要求。",
@@ -2286,6 +2328,15 @@ export const zh = {
 	schedulerDisabled: "已停用",
 	schedulerNamePlaceholder: "如：每日依赖与代码健康检查…",
 	schedulerDescPlaceholder: "说明（可选）：这个任务是干什么的…",
+	schedulerTargetLabel: "任务目标",
+	schedulerTargetConversation: "智能体对话",
+	schedulerTargetCanvas: "画布工作流",
+	schedulerGraphLabel: "画布工程",
+	schedulerGraphPlaceholder: "选择画布工程…",
+	schedulerGraphUnavailable: "不可用",
+	schedulerGraphHint: "请选择当前项目中有效的画布工程后保存。",
+	schedulerRunBaseLabel: "画布运行基础目录",
+	schedulerCanvasPromptPlaceholder: "附加输入（可选）：留空使用画布默认输入…",
 	schedulerCwdLabel: "执行目标项目",
 	schedulerCwdPlaceholder: "/绝对/路径/到/项目…",
 	schedulerUseCurrentCwd: "用当前项目",
@@ -2735,6 +2786,8 @@ export const en: Record<keyof typeof zh, string> = {
 		"Lightweight coding loop, hashline patch engine, Agent presets & 3-tier permission presets, driven by universal base",
 	settingsEngineClaudeTitle: "CLAUDE",
 	settingsEngineClaudeDesc: "Official Anthropic coding agent driven by universal base adapter, ready out of the box",
+	settingsEngineCodexTitle: "CODEX",
+	settingsEngineCodexDesc: "Official OpenAI coding agent using local Codex CLI authentication and configuration",
 	settingsEngineDurableTitle: "DURABLE",
 	settingsEngineDurableDesc:
 		"Event-sourced and transactional durable execution engine (SQLite/WAL) with crash-resilience, native task graphs, and mid-run steering",
@@ -3643,6 +3696,8 @@ export const en: Record<keyof typeof zh, string> = {
 	presetTagCloud: "Cloud",
 	presetTagLocal: "Local",
 	presetTagProxy: "Proxy",
+	engineCodexModelDesc:
+		"Driven by Codex CLI using local codex authentication and ~/.codex/config.toml. Choose the model and reasoning effort in the session selectors; provider keys on this page are not injected into Codex.",
 	engineClaudeModelDesc:
 		'Currently driven by Claude Code CLI engine. Anthropic-compatible BaseURL, API keys, and custom proxy models configured in "Models & Providers" are automatically injected into the Claude CLI subprocess (no external cc-switch tool required).',
 	engineDshModelDesc:
@@ -3710,6 +3765,12 @@ export const en: Record<keyof typeof zh, string> = {
 	"tpl.fieldPrompt": "Prompt",
 	"tpl.fieldPromptPh": "The full prompt sent to the agent",
 	"tpl.required": "Title and prompt are required",
+	"tpl.fieldCommand": "Shortcut command (optional)",
+	"tpl.commandHint":
+		"For example /pr: send /pr 798 to replace {{input}} in the prompt with 798. Without a placeholder, arguments are appended. Existing system or skill commands take priority. Templates are stored in a local file on the server.",
+	"tpl.commandInvalid": "Start with a letter; use only letters, digits, underscores and hyphens",
+	"tpl.commandDuplicate": "Another template already uses this command",
+	"tpl.storageError": "Failed to load or save templates",
 	"tpl.save": "Save",
 	"tpl.fill": "Fill input",
 	"tpl.fillTip": "Fill the input so you can tweak it before sending",
@@ -4062,14 +4123,39 @@ export const en: Record<keyof typeof zh, string> = {
 	deviceSetupCreate: "Create my own center",
 	deviceSetupTarget: "Where to host the center",
 	deviceSetupCurrent: "Machine hosting this service",
-	deviceSetupRemote: "An existing server",
-	deviceSetupNoServer: "I do not have a server yet",
-	deviceSetupNoServerHint:
-		"Connect to a center someone provides, or prepare a computer, VPS or server that stays online. Other devices must be able to reach it.",
+	deviceSetupRemote: "Remote server",
 	deviceSetupCurrentHint:
 		"Installation targets the machine running this pi-web-ui service, which may differ from your browser computer.",
 	deviceSetupRemoteHint:
-		"Confirm the target server OS, Node.js and network access. The settings below provide context for the deployment conversation; they do not execute remote commands.",
+		"Enter the server connection details and center port. HTTP is the default. AI will check the environment, guide installation and explain your actions.",
+	deviceSetupServer: "Server IP / hostname",
+	deviceSetupSshPort: "SSH login port",
+	deviceSetupUsername: "Login account",
+	deviceSetupAuth: "Authentication",
+	deviceSetupAuthPassword: "Password (enter in a secure SSH terminal)",
+	deviceSetupAuthKey: "SSH key",
+	deviceSetupAuthExisting: "Existing SSH connection",
+	deviceSetupServicePort: "Center access port (1024–65535)",
+	deviceSetupCredentialHint:
+		"This opens an AI deployment conversation. Use passwords or private keys in a secure SSH terminal, not in chat. This page does not establish an SSH connection yet.",
+	deviceSetupOptionalTls: "Optional: domain and HTTPS",
+	deviceSetupDomain: "Domain (optional, no scheme or path)",
+	deviceSetupEnableHttps: "Enable HTTPS",
+	deviceSetupTlsHint:
+		"HTTPS requires a domain, DNS and a certificate. Defaults to server IP + HTTP; HTTPS is recommended for ongoing public use.",
+	deviceSetupPreview: "Deployment URL:",
+	deviceSetupPreviewEmpty: "Generated after entering server details",
+	deviceSetupUserActions: "Actions to prepare",
+	deviceSetupCloudPorts:
+		"In your cloud console, find this instance’s security group / firewall and allow inbound TCP {ports}. Check the server OS firewall too. AI will confirm the actual rules; retain SSH access.",
+	deviceSetupSourceScope:
+		"Prefer device egress IPs / CIDRs as sources; use 0.0.0.0/0 only for access from any network. Port 80 depends on certificate validation. With a same-machine HTTPS proxy, the internal Hub port can stay private.",
+	deviceSetupAfterStart:
+		"Once running, AI will guide account creation and device connection. Progress is retained while you open ports; external access will then be verified.",
+	deviceSetupGuide: "Read the complete deployment guide",
+	deviceSetupRemoteInvalid:
+		"Enter a valid server address, login account, SSH port and center port. HTTPS also requires a domain.",
+	deviceSetupStartAi: "Start AI-assisted deployment",
 	deviceSetupPlan: "Installation plan (review before running)",
 	deviceSetupPlanHint:
 		"Defaults to loopback 127.0.0.1:8790, a separate data directory, automatic startup and open registration for the first account. Adjust settings below.",
@@ -4087,8 +4173,7 @@ export const en: Record<keyof typeof zh, string> = {
 		"This plan enables account registration. After creating the first account, manage registration access for your intended audience.",
 	deviceSetupInvalid:
 		"Enter localhost / an IP, a port from 1024 to 65535 and an HTTP(S) origin without credentials, paths, queries or fragments.",
-	deviceSetupCliHint:
-		"After installing pi-web-ui on your server, run this example. --host 0.0.0.0 binds all IPv4 interfaces; --port 8790 sets the port. Replace https://hub.example.com with a reachable center address and configure your proxy and firewall. --allow-registration enables the first account.",
+
 	deviceSetupInstalling: "Installing, please wait…",
 	deviceSetupInstall: "Install and connect",
 	deviceSetupAi: "Ask AI to help deploy",
@@ -4360,9 +4445,14 @@ export const en: Record<keyof typeof zh, string> = {
 	questionQueueOpen: "Answer",
 	questionQueueNavigate: "View source conversation",
 	questionQueueDefer: "Answer later",
+	pendingQueueDefer: "Handle later",
 	questionPresentation: "Questionnaire reminders",
 	questionPresentationDesc:
-		"Questions in the current project share one queue. Deferring preserves the question and your draft.",
+		"Current conversation: automatically open its questions and queue the others. All conversations: open questions from the current project one at a time. Queue only: open manually. Answering later preserves the question and your draft.",
+	toolApprovalPresentation: "Tool approval reminders",
+	toolApprovalPresentationDesc:
+		"Current conversation: automatically open its approvals and queue the others. All conversations: open approvals from the current project one at a time. Queue only: open manually. This only controls reminders; it never approves or rejects operations automatically.",
+	toolApprovalPresentationAll: "Automatically open approvals from all conversations",
 	questionPresentationQueue: "Open current conversation; queue others",
 	questionPresentationAll: "Automatically open questions from all conversations",
 	questionPresentationManual: "Queue only; open manually",
@@ -4467,7 +4557,10 @@ export const en: Record<keyof typeof zh, string> = {
 	delegateTaskOffHint:
 		"Disabled: the AI cannot delegate via delegate_task (free-form delegation via subagent still works, without six-section validation)",
 	toolDescSubagent:
-		"Manage subagents and persistent conversations (visible in the left panel; legacy subagent alias supported): unifies spawn (dispatch), wait_all (collect), get_result (inspect), steer (redirect), stop (abort), list (status), templates (catalog), and handoff (peer collaboration).",
+		"Manage subagents and persistent conversations (legacy subagent alias supported): spawn, wait, inspect results, steer, stop, list conversations and templates, and register final completion with complete. Use the separate communicate tool for messages, requests, and replies; old handoff and consultation actions remain compatible.",
+	communicateEnabledDesc:
+		"Communicate with parent, child, peer, or other conversations in the same project. Read your inbox and reachable addresses, send progress or handoff messages, request answers, reply, or escalate a received request to the user. Sending a message does not finish a task; use conversation complete.",
+	communicateOffHint: "Disabled: the AI cannot use communicate. The conversation management switch is independent.",
 	toolDescSubagentSpawn:
 		"Spawn an independent background subagent conversation (visible on the left) for a self-contained task; several may run in parallel.",
 	toolDescSubagentGetResult:
@@ -4973,6 +5066,15 @@ export const en: Record<keyof typeof zh, string> = {
 	schedulerDisabled: "Disabled",
 	schedulerNamePlaceholder: "E.g. Daily dependency & health check…",
 	schedulerDescPlaceholder: "Description (optional): what this task does…",
+	schedulerTargetLabel: "Task target",
+	schedulerTargetConversation: "Agent conversation",
+	schedulerTargetCanvas: "Canvas workflow",
+	schedulerGraphLabel: "Canvas project",
+	schedulerGraphPlaceholder: "Select a canvas project…",
+	schedulerGraphUnavailable: "Unavailable",
+	schedulerGraphHint: "Select an available canvas project in the current project before saving.",
+	schedulerRunBaseLabel: "Canvas run base directory",
+	schedulerCanvasPromptPlaceholder: "Additional input (optional): leave empty to use the canvas default…",
 	schedulerCwdLabel: "Target project",
 	schedulerCwdPlaceholder: "/absolute/path/to/project…",
 	schedulerUseCurrentCwd: "Use current project",

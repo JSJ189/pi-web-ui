@@ -51,6 +51,7 @@ export const PRESET_FIELD_GROUPS = {
 		"toolWatchdogTimeoutMs",
 		"questionnaireEnabled",
 		"questionPresentation",
+		"toolApprovalPresentation",
 		"questionTimeoutSeconds",
 		"editSoftEnabled",
 		"terminalToolsEnabled",
@@ -292,6 +293,12 @@ export const PRESET_FIELD_META = {
 	questionPresentation: {
 		labelZh: "问卷提醒方式",
 		labelEn: "Questionnaire reminders",
+		hintZh: "当前对话弹出、全部弹出或仅队列",
+		hintEn: "Current conversation, all popups, or manual queue",
+	},
+	toolApprovalPresentation: {
+		labelZh: "工具审批提醒方式",
+		labelEn: "Tool approval reminders",
 		hintZh: "当前对话弹出、全部弹出或仅队列",
 		hintEn: "Current conversation, all popups, or manual queue",
 	},

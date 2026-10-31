@@ -58,6 +58,13 @@ function fileCard(
 }
 
 describe("collectQuestionAttachments", () => {
+	it("restores a canvas id and title without downgrading it to a file", () => {
+		const map = collectQuestionAttachments([
+			user("u1", "inspect"),
+			fileCard("c1", [], { mode: "canvas", path: "graph-1", name: "Build" }),
+		]);
+		expect(map.get("u1")).toEqual([{ mode: "canvas", path: "graph-1", name: "Build" }]);
+	});
 	it("恢复保存在用户消息中的引用", () => {
 		const quote = { text: "引用原文", messageId: "a1", role: "assistant" };
 		const map = collectQuestionAttachments([{ ...user("u1", "解释这段"), details: { quotes: [quote] } }]);

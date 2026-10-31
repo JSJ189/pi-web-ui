@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { useEscapeKey } from "../shortcut-stack";
 import { FiUsers, FiPlus, FiMessageSquare, FiMonitor } from "react-icons/fi";
 import type { DeviceGroupNavigation } from "../device-group-navigation";
 import { appUrl } from "../base-url";
@@ -75,7 +77,37 @@ function openChat(roomId: string) {
 	window.dispatchEvent(new CustomEvent("pi-web-ui:device-group-open", { detail: { roomId } }));
 }
 
-export function DeviceGroups({ active = true, navigation }: { active?: boolean; navigation?: DeviceGroupNavigation }) {
+export function DeviceGroupCreateDialog({ onClose }: { onClose: () => void }) {
+	const { locale } = useI18n();
+	const w = words[isZhLocale(locale) ? "zh" : "en"];
+	useEscapeKey(onClose);
+	return createPortal(
+		<div className="modal-backdrop" onClick={onClose}>
+			<div
+				className="device-group-create-dialog"
+				role="dialog"
+				aria-modal="true"
+				aria-label={w.create}
+				onClick={(event) => event.stopPropagation()}
+			>
+				<DeviceGroups createOnly onClose={onClose} />
+			</div>
+		</div>,
+		document.body,
+	);
+}
+
+export function DeviceGroups({
+	active = true,
+	navigation,
+	createOnly = false,
+	onClose,
+}: {
+	active?: boolean;
+	navigation?: DeviceGroupNavigation;
+	createOnly?: boolean;
+	onClose?: () => void;
+}) {
 	const { locale } = useI18n();
 	const w = words[isZhLocale(locale) ? "zh" : "en"];
 	const [devices, setDevices] = useState<Device[]>([]);
@@ -84,7 +116,7 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 	const [detail, setDetail] = useState<Detail | null>(null);
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState("");
-	const [creating, setCreating] = useState(false);
+	const [creating, setCreating] = useState(createOnly);
 	const [managing, setManaging] = useState(false);
 	const [name, setName] = useState("");
 	const [selected, setSelected] = useState<string[]>([]);
@@ -225,7 +257,10 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 			setSelected([]);
 			setRefresh((value) => value + 1);
 			window.dispatchEvent(new CustomEvent("pi-web-ui:device-groups-changed"));
-			if (isCreate) openChat(room.id);
+			if (isCreate) {
+				openChat(room.id);
+				if (createOnly) onClose?.();
+			}
 		} catch (cause) {
 			if (!controller.signal.aborted && mutation.current === controller) setError(explain(cause));
 		} finally {
@@ -238,34 +273,36 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 	const currentRoom = rooms.find((room) => room.id === roomId);
 	return (
 		<section className="dg-root" aria-label={w.groups}>
-			<div className="dc-card dg-sidebar">
-				<div className="dg-heading">
-					<h2>
-						<FiUsers /> {w.groups}
-					</h2>
-					<button className="dc-button" type="button" disabled={!active} onClick={beginCreate}>
-						<FiPlus /> {w.create}
-					</button>
-				</div>
-				<div className="dg-rooms">
-					{rooms.map((room) => (
-						<button
-							className="dc-button dg-room"
-							type="button"
-							key={room.id}
-							aria-current={room.id === roomId ? "page" : undefined}
-							disabled={!active}
-							onClick={() => {
-								selectRoom(room.id);
-								openChat(room.id);
-							}}
-						>
-							<FiMessageSquare /> {room.name}
+			{!createOnly && (
+				<div className="dc-card dg-sidebar">
+					<div className="dg-heading">
+						<h2>
+							<FiUsers /> {w.groups}
+						</h2>
+						<button className="dc-button" type="button" disabled={!active} onClick={beginCreate}>
+							<FiPlus /> {w.create}
 						</button>
-					))}
+					</div>
+					<div className="dg-rooms">
+						{rooms.map((room) => (
+							<button
+								className="dc-button dg-room"
+								type="button"
+								key={room.id}
+								aria-current={room.id === roomId ? "page" : undefined}
+								disabled={!active}
+								onClick={() => {
+									selectRoom(room.id);
+									openChat(room.id);
+								}}
+							>
+								<FiMessageSquare /> {room.name}
+							</button>
+						))}
+					</div>
+					{!loading && !rooms.length && <p className="dg-empty">{w.empty}</p>}
 				</div>
-				{!loading && !rooms.length && <p className="dg-empty">{w.empty}</p>}
-			</div>
+			)}
 			<div className="dc-card dg-chat">
 				{error && (
 					<p className="dc-error" role="alert">
@@ -328,6 +365,7 @@ export function DeviceGroups({ active = true, navigation }: { active?: boolean; 
 								onClick={() => {
 									cancelMutation();
 									pendingManage.current = null;
+									if (createOnly) onClose?.();
 									setCreating(false);
 									setManaging(false);
 									setError("");

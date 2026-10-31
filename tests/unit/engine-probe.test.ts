@@ -22,6 +22,8 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 		expect(ENGINE_PACKAGES.dsh.installCommand).toBe("npm i -g @deepseek-ai/dsh");
 		expect(ENGINE_PACKAGES.claude.packageName).toBe("@anthropic-ai/claude-code");
 		expect(ENGINE_PACKAGES.claude.installCommand).toBe("npm i -g @anthropic-ai/claude-code");
+		expect(ENGINE_PACKAGES.codex.packageName).toBe("@openai/codex");
+		expect(ENGINE_PACKAGES.codex.installCommand).toBe("npm i -g @openai/codex");
 	});
 
 	it("probePi() 恒返回 installed: true 且带有包名和版本", () => {
@@ -67,6 +69,7 @@ describe("引擎探测与更新检测模块 (server/engine-probe.ts)", () => {
 		expect(list.some((e) => e.id === "pi" && e.installed)).toBe(true);
 		expect(list.some((e) => e.id === "dsh")).toBe(true);
 		expect(list.some((e) => e.id === "claude")).toBe(true);
+		expect(list.some((e) => e.id === "codex" && e.packageName === "@openai/codex")).toBe(true);
 
 		const cached = getCachedEngineStatuses();
 		expect(cached).toEqual(list);

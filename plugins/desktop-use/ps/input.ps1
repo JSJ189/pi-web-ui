@@ -10,6 +10,9 @@
 param(
   [string]$Op = "",
   [int]$X = 0, [int]$Y = 0,
+  [int]$ToX = 0, [int]$ToY = 0,
+  [ValidateRange(100, 2000)][int]$Duration = 500,
+  [int]$Delta = 360, [int]$Horizontal = 0,
   [string]$Button = "left",
   [int]$Double = 0,
   [string]$Keys = "",
@@ -74,7 +77,7 @@ $VK = @{
   backspace = 0x08; delete = 0x2E; up = 0x26; down = 0x28; left = 0x25; right = 0x27
   home = 0x24; end = 0x23; pgup = 0x21; pgdn = 0x22; insert = 0x2D
 }
-for ($i = 1; $i -le 12; $i++) { $VK["f$i"] = 0x6F + $i }
+for ($i = 1; $i -le 24; $i++) { $VK["f$i"] = 0x6F + $i }
 foreach ($c in "abcdefghijklmnopqrstuvwxyz".ToCharArray()) { $VK[[string]$c] = [int][char]([string]$c).ToUpper() }
 foreach ($c in "0123456789".ToCharArray()) { $VK[[string]$c] = [int][char][string]$c }
 $MODMAP = @{ ctrl = 0x11; alt = 0x12; shift = 0x10; win = 0x5B }
@@ -91,6 +94,29 @@ try {
     "move" {
       Move-Cursor $X $Y
       Out-Ok @{ x = $X; y = $Y }
+    }
+    "scroll" {
+      Move-Cursor $X $Y
+      Start-Sleep -Milliseconds 60
+      $flag = $(if ($Horizontal -eq 1) { 0x1000 } else { 0x0800 })
+      [Inp]::mouse_event($flag, 0, 0, $Delta, [UIntPtr]::Zero)
+      Out-Ok @{ delta = $Delta; horizontal = $Horizontal }
+    }
+    "drag" {
+      Move-Cursor $X $Y
+      Start-Sleep -Milliseconds 60
+      try {
+        [Inp]::mouse_event([Inp]::MOUSEEVENTF_LEFTDOWN, 0, 0, 0, [UIntPtr]::Zero)
+        Start-Sleep -Milliseconds 60
+        $steps = 20
+        for ($step = 1; $step -le $steps; $step++) {
+          Move-Cursor ([int]($X + ($ToX - $X) * $step / $steps)) ([int]($Y + ($ToY - $Y) * $step / $steps))
+          Start-Sleep -Milliseconds ([int]($Duration / $steps))
+        }
+      } finally {
+        [Inp]::mouse_event([Inp]::MOUSEEVENTF_LEFTUP, 0, 0, 0, [UIntPtr]::Zero)
+      }
+      Out-Ok @{ x = $ToX; y = $ToY }
     }
     "click" {
       Move-Cursor $X $Y
@@ -152,8 +178,12 @@ try {
         Send-Vk 0x56 $true
         Start-Sleep -Milliseconds 20
         Send-Vk 0x11 $true
+        # Allow the target application to consume the clipboard before restoring it.
+        Start-Sleep -Milliseconds 250
         Out-Ok @{ chars = $Text.Length }
       } finally {
+        Send-Vk 0x56 $true
+        Send-Vk 0x11 $true
         if ($null -ne $prevText) {
           try { Set-Clipboard -Value $prevText } catch { # 恢复失败不掩盖主流程结果
           }
@@ -172,7 +202,7 @@ try {
       [void][Inp]::SetForegroundWindow($found.MainWindowHandle)
       Out-Ok @{ title = $found.MainWindowTitle }
     }
-    default { Out-Err "unknown op: $Op (move|click|key|paste|focus)" }
+    default { Out-Err "unknown op: $Op (move|click|scroll|drag|key|paste|focus)" }
   }
 } catch {
   Out-Err $_.Exception.Message

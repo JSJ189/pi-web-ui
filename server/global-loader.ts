@@ -21,6 +21,8 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 let cachedNpmRootG: string | null = null;
 let cachedCandidateRoots: string[] | null = null;
+let candidateRootsCachedAt = 0;
+const CANDIDATE_CACHE_TTL_MS = 5000;
 const packageRootCache = new Map<string, string | null>();
 
 /**
@@ -54,9 +56,15 @@ export function getSystemNpmRootG(): string | null {
  * 覆盖：本地项目链、Node 邻近目录、fnm、nvm、pnpm、volta、yarn、bun、npm 全局 prefix 等。
  */
 export function getCandidateNodeModulesRoots(options?: { refresh?: boolean }): string[] {
-	if (!options?.refresh && cachedCandidateRoots !== null) {
+	if (
+		!options?.refresh &&
+		cachedCandidateRoots !== null &&
+		Date.now() - candidateRootsCachedAt < CANDIDATE_CACHE_TTL_MS
+	) {
 		return cachedCandidateRoots;
 	}
+	// A refreshed discovery must also re-query npm when its prefix changed.
+	cachedNpmRootG = null;
 
 	const candidates = new Set<string>();
 
@@ -105,7 +113,37 @@ export function getCandidateNodeModulesRoots(options?: { refresh?: boolean }): s
 	const env = process.env;
 	const home = env.HOME || env.USERPROFILE || homedir();
 
-	// 6. 版本管理器：fnm 自动嗅探
+	// 6. fnm 的 multishell 是临时链接；桌面/服务启动时可能完全不存在。
+	// 持久安装位于 FNM_DIR/node-versions/<version>/installation。
+	if (env.FNM_MULTISHELL_PATH) {
+		for (const suffix of ["node_modules", join("lib", "node_modules")]) {
+			const nm = join(env.FNM_MULTISHELL_PATH, suffix);
+			if (existsSync(nm)) candidates.add(resolve(nm));
+		}
+	}
+	const fnmDirs = new Set(
+		[
+			env.FNM_DIR,
+			env.APPDATA && join(env.APPDATA, "fnm"),
+			env.LOCALAPPDATA && join(env.LOCALAPPDATA, "fnm"),
+			join(env.XDG_DATA_HOME || join(home, ".local", "share"), "fnm"),
+			join(home, ".fnm"),
+		].filter((dir): dir is string => !!dir),
+	);
+	for (const fnmDir of fnmDirs) {
+		try {
+			const versionsDir = join(fnmDir, "node-versions");
+			const versions = readdirSync(versionsDir).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+			for (const version of versions) {
+				for (const suffix of ["node_modules", join("lib", "node_modules")]) {
+					const nm = join(versionsDir, version, "installation", suffix);
+					if (existsSync(nm)) candidates.add(resolve(nm));
+				}
+			}
+		} catch {
+			/* Missing or unreadable version store; continue with other managers. */
+		}
+	}
 	if (process.platform === "win32") {
 		const localAppData = env.LOCALAPPDATA;
 		if (localAppData) {
@@ -202,6 +240,7 @@ export function getCandidateNodeModulesRoots(options?: { refresh?: boolean }): s
 	}
 
 	cachedCandidateRoots = Array.from(candidates);
+	candidateRootsCachedAt = Date.now();
 	return cachedCandidateRoots;
 }
 

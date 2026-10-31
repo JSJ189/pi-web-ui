@@ -19,6 +19,8 @@ export type SchedulerKind = "cron" | "interval";
 export type SchedulerCatchUp = "skip" | "once";
 
 export interface SchedulerTaskInput {
+	target?: "conversation" | "canvas";
+	graphId?: string;
 	id?: string;
 	name?: string;
 	description?: string;
@@ -44,6 +46,9 @@ export interface SchedulerTaskInput {
 }
 
 export interface SchedulerTask {
+	/** Missing on legacy task objects means conversation. */
+	target?: "conversation" | "canvas";
+	graphId?: string;
 	id: string;
 	name: string;
 	description: string;
@@ -71,6 +76,9 @@ export interface SchedulerTask {
 }
 
 export interface SchedulerRunRecord {
+	target?: "conversation" | "canvas";
+	graphId?: string;
+	runId?: string;
 	at: number;
 	ok: boolean;
 	durationMs: number;
@@ -88,6 +96,9 @@ export interface SchedulerTaskView extends SchedulerTask {
 }
 
 export interface SchedulerExecutorResult {
+	target?: "conversation" | "canvas";
+	graphId?: string;
+	runId?: string;
 	ok: boolean;
 	conversationId?: string;
 	error?: string;
@@ -188,8 +199,20 @@ export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.no
 		}
 		spec = String(ms);
 	}
+	if (input.target !== undefined && input.target !== "conversation" && input.target !== "canvas") {
+		throw new SchedulerValidationError("invalid_target", "任务目标非法", "Invalid task target");
+	}
+	const graphId = String(input.graphId ?? "").trim();
+	const target = input.target ?? (graphId ? "canvas" : "conversation");
+	if (target === "canvas" && (!/^[A-Za-z0-9._-]{1,64}$/.test(graphId) || graphId === "." || graphId === "..")) {
+		throw new SchedulerValidationError(
+			"invalid_graph_id",
+			"画布工程 id 非法或为空",
+			"Invalid or missing canvas graph id",
+		);
+	}
 	const prompt = String(input.prompt ?? "").trim();
-	if (!prompt) {
+	if (!prompt && target === "conversation") {
 		throw new SchedulerValidationError(
 			"empty_prompt",
 			"触发指令（prompt）不能为空",
@@ -203,7 +226,7 @@ export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.no
 			"Trigger instruction too long (>8000 characters), please shorten and retry",
 		);
 	}
-	const model = String(input.model ?? "").trim();
+	const model = target === "canvas" ? "" : String(input.model ?? "").trim();
 	if (model && !model.includes("/")) {
 		throw new SchedulerValidationError(
 			"invalid_model",
@@ -211,7 +234,7 @@ export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.no
 			"Invalid model format (expected provider/id)",
 		);
 	}
-	const thinkingLevel = String(input.thinkingLevel ?? "").trim();
+	const thinkingLevel = target === "canvas" ? "" : String(input.thinkingLevel ?? "").trim();
 	const catchUp: SchedulerCatchUp = input.catchUp === "once" ? "once" : "skip";
 	const conversationId = String(input.conversationId ?? "")
 		.trim()
@@ -223,6 +246,8 @@ export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.no
 		.slice(0, 1024);
 	return {
 		id,
+		target,
+		...(target === "canvas" ? { graphId } : {}),
 		name,
 		description,
 		cwd,
@@ -233,8 +258,8 @@ export function normalizeSchedulerInput(input: SchedulerTaskInput, now = Date.no
 		model,
 		thinkingLevel,
 		catchUp,
-		conversationId,
-		sessionFile,
+		conversationId: target === "canvas" ? "" : conversationId,
+		sessionFile: target === "canvas" ? "" : sessionFile,
 		oneShot: input.oneShot === true,
 		createdAt: now,
 		updatedAt: now,
@@ -289,6 +314,9 @@ function sanitizeHistory(v: unknown): SchedulerRunRecord[] {
 			ok: rec.ok === true,
 			durationMs: typeof rec.durationMs === "number" && Number.isFinite(rec.durationMs) ? rec.durationMs : 0,
 			...(typeof rec.conversationId === "string" && rec.conversationId ? { conversationId: rec.conversationId } : {}),
+			...(rec.target === "canvas" || rec.target === "conversation" ? { target: rec.target } : {}),
+			...(typeof rec.graphId === "string" && rec.graphId ? { graphId: rec.graphId.slice(0, 64) } : {}),
+			...(typeof rec.runId === "string" && rec.runId ? { runId: rec.runId.slice(0, 128) } : {}),
 			...(typeof rec.error === "string" && rec.error ? { error: rec.error.slice(0, 500) } : {}),
 			...(rec.manual === true ? { manual: true as const } : {}),
 		});
@@ -318,6 +346,8 @@ export class SchedulerStore {
 		private readonly dataDir: string,
 		private readonly opts: {
 			executor?: SchedulerExecutor;
+			/** Validate external references before persisting an upsert; throwing leaves state unchanged. */
+			validateTask?: (task: SchedulerTask) => void;
 			onChange?: () => void;
 			notify?: (level: "info" | "warning" | "error", text: string, textEn?: string) => void;
 			onTaskRemoved?: (taskId: string) => void;
@@ -379,6 +409,8 @@ export class SchedulerStore {
 				try {
 					const task = normalizeSchedulerInput({
 						id,
+						target: r.target as SchedulerTaskInput["target"],
+						graphId: r.graphId as string,
 						name: r.name as string,
 						description: r.description as string,
 						cwd: r.cwd as string,
@@ -440,6 +472,8 @@ export class SchedulerStore {
 				const history = sanitizeHistory(t.history);
 				return {
 					id: t.id,
+					target: t.target ?? "conversation",
+					...(t.graphId ? { graphId: t.graphId } : {}),
 					name: t.name,
 					description: t.description,
 					cwd: t.cwd,
@@ -470,15 +504,26 @@ export class SchedulerStore {
 	 *  字段显式出现（含空串）仍按全量语义覆盖。 */
 	upsert(input: SchedulerTaskInput): SchedulerTask {
 		const prev = this.tasks.get(String(input.id ?? "").trim());
-		const task = normalizeSchedulerInput(input);
+		const task = normalizeSchedulerInput({
+			...input,
+			...(prev && input.target === undefined && input.graphId === undefined
+				? { target: prev.target, graphId: prev.graphId }
+				: {}),
+		});
 		if (prev) {
 			task.createdAt = prev.createdAt;
 			task.updatedAt = Date.now();
-			if (input.conversationId === undefined && input.sessionFile === undefined) {
+			if (
+				task.target !== "canvas" &&
+				prev.target !== "canvas" &&
+				input.conversationId === undefined &&
+				input.sessionFile === undefined
+			) {
 				task.conversationId = prev.conversationId;
 				task.sessionFile = prev.sessionFile ?? "";
 			}
 		}
+		this.opts.validateTask?.(task);
 		const history = prev?.history ? sanitizeHistory(prev.history) : [];
 		this.save(new Map(this.tasks).set(task.id, { ...task, history }));
 		// spec/cwd/开关变了 → 按现在重排下次触发
@@ -519,7 +564,7 @@ export class SchedulerStore {
 	 *  与历史）。无变化回 false（调用方免一次落盘+推送）；未知任务回 false。 */
 	rebind(id: string, binding: { conversationId?: string; sessionFile?: string }): boolean {
 		const prev = this.tasks.get(id);
-		if (!prev) return false;
+		if (!prev || prev.target === "canvas") return false;
 		const t = { ...prev };
 		let dirty = false;
 		if (binding.conversationId !== undefined) {
@@ -589,10 +634,14 @@ export class SchedulerStore {
 				at: Date.now(),
 				ok: result.ok,
 				durationMs,
+				target: task.target ?? "conversation",
+				...(task.graphId ? { graphId: task.graphId } : {}),
+				...(result.runId ? { runId: result.runId } : {}),
 				...(result.conversationId ? { conversationId: result.conversationId } : {}),
 				...(result.error ? { error: result.error.slice(0, 500) } : {}),
 				...(manual ? { manual } : {}),
 			});
+			if (task.oneShot) this.remove(id);
 		} catch (err) {
 			result = {
 				ok: false,
@@ -604,7 +653,11 @@ export class SchedulerStore {
 			// 仅推进内存调度，使用执行期间更新后的配置，不伪造成功历史。
 			// 进程重启后仍可能补跑：本地记录与外部副作用不保证跨进程 exactly-once。
 			const cur = this.tasks.get(id);
-			if (cur && cur.enabled && !manual) {
+			if (cur && task.oneShot) {
+				// A failed history/removal write must not repeat an already attempted one-shot.
+				this.tasks.set(id, { ...cur, enabled: false });
+				this.nextFire.delete(id);
+			} else if (cur && cur.enabled && !manual) {
 				this.nextFire.set(id, computeNextFire(cur, Date.now()) ?? Date.now() + TICK_MS);
 			}
 			this.running.delete(id);

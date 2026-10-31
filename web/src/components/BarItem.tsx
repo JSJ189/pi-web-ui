@@ -27,6 +27,7 @@ import { useFormattedCost } from "../cost-format";
 import { isZhLocale, useT, useI18n } from "../i18n";
 import { useAppGlobals, appSend } from "../app-globals";
 import { PluginIcon } from "../plugin-icon";
+import { BrandDeviceMenu } from "./BrandDeviceMenu";
 import { focusComposer } from "../composer-bridge";
 import { openContextMenu } from "../context-menu-state";
 import { cacheMetrics, estimateStreamTokens, streamRate, trimRateSamples, type RateSample } from "../cache-stats";
@@ -34,7 +35,6 @@ import { Dropdown, DropdownItem } from "./Dropdown";
 import { BrowserControl } from "./BrowserControl";
 import { BROWSER_PAGE_TOOL_NAME } from "../../../server/tool-manager.js";
 import { EnginePicker } from "./EnginePicker";
-import { appUrl } from "../base-url";
 
 export type ViewName = "chat" | "terminal" | "git" | "canvas" | "devices" | `plugin:${string}`;
 
@@ -350,24 +350,7 @@ export function BarItem({
 
 	// 1. 特殊条目：品牌（唯品牌徽标例外，不加 data-tip）
 	if (id === "host:brand") {
-		return (
-			<span
-				className="bar-item brand bar-item-brand"
-				title={t("brand")}
-				onContextMenu={handleContextMenu}
-				data-bar-item={id}
-			>
-				<img
-					className="brand-logo bar-item-brand-logo bar-item-icon"
-					src={appUrl("/icons/icon-192.png")}
-					alt="pi-web-ui"
-					width={26}
-					height={26}
-					draggable={false}
-				/>
-				<span className="brand-name bar-item-text">{named("pi-web-ui")}</span>
-			</span>
-		);
+		return <BrandDeviceMenu label={named("pi-web-ui")} barItem onContextMenu={handleContextMenu} />;
 	}
 
 	// 2. 特殊条目：连接状态（已连接时附带实时网络延迟 ms）

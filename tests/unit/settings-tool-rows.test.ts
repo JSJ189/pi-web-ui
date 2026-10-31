@@ -52,12 +52,13 @@ describe("设置「工具」页覆盖率", () => {
 	it("对话协作只展示一个 conversation 开关，并保留其他子代理工具", () => {
 		const expression = SETTINGS_SRC.match(/const CONVERSATION_TOOL_NAMES = ([\s\S]*?);/)?.[1];
 		expect(expression).toBeTruthy();
-		const names = new Function("SUBAGENT_TOOL_NAMES", `return ${expression}`)([
-			"conversation",
-			"subagent",
-			"subagent_spawn",
-		]);
-		expect(names).toEqual(["conversation", "subagent_spawn"]);
+		const renderNames = new Function("AGENT_TOOL_CATALOG", `return ${expression}`);
+		const names = renderNames([...AGENT_TOOL_CATALOG, { name: "future_communication", group: "subagent" }]);
+		expect(names).toEqual(["conversation", "communicate", "future_communication"]);
+		const communicate = AGENT_TOOL_CATALOG.find((tool) => tool.name === "communicate")!;
+		expect(zh[communicate.descKey as keyof typeof zh]).toContain("对话间沟通");
+		expect(zh[communicate.offHintKey as keyof typeof zh]).toContain("关闭后");
+		expect(SETTINGS_SRC).toContain('tool.group === "subagent" && tool.descKey');
 		expect(SETTINGS_SRC).toContain("CONVERSATION_TOOL_NAMES.map");
 	});
 

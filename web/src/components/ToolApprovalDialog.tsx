@@ -5,6 +5,7 @@ import { appSend } from "../app-globals";
 import { isZhLocale, useI18n, useT } from "../i18n";
 import { renderHighlightedCommand } from "../bash-danger";
 import type { UiToolApproval } from "../types";
+import { PendingQueue } from "./PendingQueue";
 
 interface ToolApprovalDialogProps {
 	approval: UiToolApproval | null;
@@ -23,7 +24,42 @@ interface ToolApprovalDialogProps {
  *
  * 后两个只在内存里（服务重启/新对话即恢复询问），撤销入口在 设置 →「工具」页。
  */
-export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
+export function ToolApprovalDialog({
+	approvals,
+	activeConversationId,
+	mode = "all",
+}: {
+	approvals: UiToolApproval[];
+	activeConversationId?: string | null;
+	mode?: "queue" | "all" | "manual";
+}) {
+	const t = useT();
+	return (
+		<PendingQueue
+			items={approvals}
+			itemKey={(item) => item.id}
+			title={t("toolApprovalTitle")}
+			summary={(item) => (
+				<>
+					{item.conversationTitle && <strong>{item.conversationTitle} · </strong>}
+					{item.toolName}
+				</>
+			)}
+			createdAt={(item) => item.createdAt ?? 0}
+			canAutoOpen={(item) =>
+				mode !== "manual" && (mode === "all" || item.conversationId === activeConversationId || !item.conversationId)
+			}
+			onNavigate={(item) => {
+				if (item.conversationId) appSend({ type: "switch_conversation", id: item.conversationId });
+			}}
+			canNavigate={(item) => !!item.conversationId}
+		>
+			{(approval, onDefer) => <ApprovalDialog key={approval.id} approval={approval} onDefer={onDefer} />}
+		</PendingQueue>
+	);
+}
+
+function ApprovalDialog({ approval, onDefer }: ToolApprovalDialogProps & { onDefer: () => void }) {
 	const t = useT();
 	const { locale } = useI18n();
 
@@ -46,7 +82,7 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 			}
 			setParseError(null);
 		}
-	}, [approval]);
+	}, [approval?.id]);
 
 	if (!approval) return null;
 
@@ -129,6 +165,9 @@ export function ToolApprovalDialog({ approval }: ToolApprovalDialogProps) {
 						</span>
 					)}
 					{approval.conversationTitle && <span className="tool-info-label">{approval.conversationTitle}</span>}
+					<button type="button" className="btn" onClick={onDefer}>
+						{t("pendingQueueDefer")}
+					</button>
 					<button type="button" className="btn" title={t("toolApprovalDeny")} onClick={handleDeny}>
 						<FiX />
 					</button>

@@ -593,332 +593,196 @@ export default {
 		const untools = [];
 
 		if (typeof host.registerAgentTool === "function") {
-			// 1) live2d_list_models
 			untools.push(
 				host.registerAgentTool({
-					name: "live2d_list_models",
-					label: "列出看板娘模型",
+					name: "live2d",
+					label: "Live2D 看板娘",
 					description:
-						"List all available Live2D companion pet models with keys and supported expressions. Response indicates the active model.",
-					promptSnippet: "inspect available Live2D pet models",
-					promptGuidelines: ["Call before live2d_switch_model to obtain valid model keys."],
+						"Control on-screen Live2D companion pet: switch models, play facial expressions, speak bubbles, lip-sync audio, switch tracking mode, or blink.",
+					promptSnippet: "interact with or control on-screen Live2D pet",
+					promptGuidelines: [
+						"Use action='list_models' to inspect available models before switching.",
+						"Use action='list_expressions' to query supported emotions for the active pet.",
+					],
 					parameters: {
 						type: "object",
-						properties: {},
-					},
-					async execute() {
-						const models = await getAllModels();
-						return JSON.stringify({
-							current: currentState.currentModel,
-							mode: currentState.mode,
-							models: models.map((m) => ({ key: m.key, name: m.name, expressions: m.expressions })),
-						});
-					},
-				}),
-			);
-
-			// 2) live2d_get_current_model
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_get_current_model",
-					label: "获取当前看板娘",
-					description:
-						"Get the currently loaded Live2D companion model key, active interaction mode, and available expressions.",
-					promptSnippet: "inspect the active Live2D model and state",
-					promptGuidelines: ["Use to verify which pet model is active before playing specific expressions."],
-					parameters: {
-						type: "object",
-						properties: {},
-					},
-					async execute() {
-						const models = await getAllModels();
-						const entry = models.find((m) => m.key === currentState.currentModel) || models[0];
-						return JSON.stringify({
-							current: currentState.currentModel,
-							mode: currentState.mode,
-							modelName: entry.name,
-							expressions: entry.expressions || [],
-						});
-					},
-				}),
-			);
-
-			// 3) live2d_list_expressions
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_list_expressions",
-					label: "列出看板娘表情",
-					description: "List all available expression names for the active or specified Live2D companion model.",
-					promptSnippet: "discover valid emotions for the pet",
-					promptGuidelines: ["Call before live2d_play_expression if you need to inspect exact expression names."],
-					parameters: {
-						type: "object",
+						required: ["action"],
 						properties: {
+							action: {
+								type: "string",
+								enum: [
+									"list_models",
+									"get_current_model",
+									"list_expressions",
+									"play_expression",
+									"show_bubble",
+									"switch_mode",
+									"switch_model",
+									"play_audio",
+									"stop_audio",
+									"trigger_blink",
+								],
+								description: "Action to perform on the Live2D companion pet.",
+							},
 							model: {
 								type: "string",
-								description: "Model key to query. Omit to query the currently active model.",
+								description: "Model key for switch_model or list_expressions.",
 							},
-						},
-					},
-					async execute(_id, params) {
-						const targetKey = params?.model || currentState.currentModel;
-						const models = await getAllModels();
-						const entry = models.find((m) => m.key === targetKey) || models[0];
-						return JSON.stringify({
-							model: entry.key,
-							expressions: entry.expressions || ["happy", "sad", "angry", "surprised"],
-						});
-					},
-				}),
-			);
-
-			// 4) live2d_play_expression
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_play_expression",
-					label: "播放看板娘表情",
-					description:
-						"Trigger an emotional facial expression on the on-screen Live2D companion (e.g. happy, sad, angry, surprised, blush, wink).",
-					promptSnippet: "express emotions through the pet",
-					promptGuidelines: ["Use to show excitement, empathy, or concentration when interacting with the user."],
-					parameters: {
-						type: "object",
-						required: ["name"],
-						properties: {
 							name: {
 								type: "string",
-								description: "Expression name or alias (happy, sad, angry, surprised, blush, wink, neutral).",
+								description: "Expression name or alias for play_expression, or track title for play_audio.",
 							},
-							duration: {
-								type: "number",
-								description: "Duration in milliseconds before reverting to neutral (default 4000).",
-							},
-						},
-					},
-					async execute(_id, params) {
-						const name = params?.name || "happy";
-						const duration = params?.duration || 4000;
-						host.broadcast({
-							type: "live2d:action",
-							action: "expression",
-							name,
-							duration,
-						});
-						return `Live2D pet played expression: ${name}`;
-					},
-				}),
-			);
-
-			// 5) live2d_show_bubble
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_show_bubble",
-					label: "显示气泡对话",
-					description:
-						"Display a speech bubble dialogue above the on-screen Live2D companion with an optional emotion.",
-					promptSnippet: "speak concise dialogue above the pet",
-					promptGuidelines: ["Keep messages concise (1-2 sentences) so the speech bubble stays readable."],
-					parameters: {
-						type: "object",
-						required: ["text"],
-						properties: {
 							text: {
 								type: "string",
-								description: "The speech text to display in the bubble.",
+								description: "Speech text to display in speech bubble for show_bubble.",
 							},
 							expression: {
 								type: "string",
-								description: "Optional expression to play simultaneously (happy, surprised, wink, etc.).",
+								description: "Optional accompanying expression for show_bubble.",
 							},
-							duration: {
-								type: "number",
-								description: "Duration in milliseconds to keep bubble visible (default 4500).",
-							},
-						},
-					},
-					async execute(_id, params) {
-						const text = params?.text || "";
-						const expression = params?.expression;
-						const duration = params?.duration || 4500;
-						host.broadcast({
-							type: "live2d:action",
-							action: "bubble",
-							text,
-							expression,
-							duration,
-						});
-						return `Live2D pet says: ${text}`;
-					},
-				}),
-			);
-
-			// 6) live2d_switch_mode
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_switch_mode",
-					label: "切换看板娘模式",
-					description:
-						"Switch the Live2D companion interaction mode between 'mouse' (eye and head follow cursor) and 'idle' (calm breathing).",
-					promptSnippet: "toggle pet interaction mode",
-					promptGuidelines: ["Only 'mouse' and 'idle' are valid mode values."],
-					parameters: {
-						type: "object",
-						required: ["mode"],
-						properties: {
 							mode: {
 								type: "string",
 								enum: ["mouse", "idle"],
-								description: "Target mode: 'mouse' or 'idle'.",
+								description:
+									"Target interaction mode for switch_mode: 'mouse' (eye/head follow) or 'idle' (calm breathing).",
 							},
-						},
-					},
-					async execute(_id, params) {
-						const mode = params?.mode;
-						if (mode !== "mouse" && mode !== "idle") {
-							return `Invalid mode: ${mode}. Must be 'mouse' or 'idle'.`;
-						}
-						currentState.mode = mode;
-						void saveState();
-						host.broadcast({
-							type: "live2d:action",
-							action: "mode",
-							mode,
-						});
-						return `Live2D pet mode switched to: ${mode}`;
-					},
-				}),
-			);
-
-			// 7) live2d_switch_model
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_switch_model",
-					label: "切换看板娘角色",
-					description:
-						"Switch the active Live2D companion to another configured model. Use live2d_list_models to find valid keys.",
-					promptSnippet: "switch the active Live2D pet",
-					promptGuidelines: ["Ensure the model key exists in live2d_list_models."],
-					parameters: {
-						type: "object",
-						required: ["model"],
-						properties: {
-							model: {
-								type: "string",
-								description: "Model key to switch to (e.g. 'shizuku', 'haru', 'hiyori', 'wanko').",
+							duration: {
+								type: "number",
+								description: "Duration in milliseconds for play_expression or show_bubble.",
 							},
-						},
-					},
-					async execute(_id, params) {
-						let model = params?.model;
-						if (model === "koharu") model = "haru";
-						const models = await getAllModels();
-						const found = models.find((m) => m.key === model);
-						if (!found) {
-							return `Model '${model}' not found. Available models: ${models.map((m) => m.key).join(", ")}`;
-						}
-						currentState.currentModel = model;
-						void saveState();
-						host.broadcast({
-							type: "live2d:action",
-							action: "model_switch",
-							model,
-						});
-						return `Live2D model switched to: ${found.name}`;
-					},
-				}),
-			);
-
-			// 8) live2d_play_audio
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_play_audio",
-					label: "播放音乐口型对齐",
-					description: "Play music or speech audio with real-time mouth lip sync on the Live2D companion.",
-					promptSnippet: "play audio with pet lip-sync",
-					promptGuidelines: ["Use an accessible audio URL to play music or speech through the pet."],
-					parameters: {
-						type: "object",
-						required: ["url"],
-						properties: {
 							url: {
 								type: "string",
-								description: "Direct audio URL (e.g. mp3/wav/ogg/aac link) or base64 data URI.",
-							},
-							name: {
-								type: "string",
-								description: "Optional track name or speech title for display.",
+								description: "Direct audio URL or base64 data URI for play_audio.",
 							},
 							volume: {
 								type: "number",
-								description: "Playback volume from 0.0 to 1.0 (default 0.85).",
+								description: "Playback volume from 0.0 to 1.0 for play_audio (default 0.85).",
 							},
-						},
-					},
-					async execute(_id, params) {
-						const url = params?.url;
-						if (!url) return "Error: 'url' parameter is required.";
-						const name = params?.name || "";
-						const volume = typeof params?.volume === "number" ? params.volume : 0.85;
-						host.broadcast({
-							type: "live2d:action",
-							action: "play_audio",
-							url,
-							name,
-							volume,
-						});
-						return `Playing audio on Live2D pet with lip sync: ${name || url}`;
-					},
-				}),
-			);
-
-			// 9) live2d_stop_audio
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_stop_audio",
-					label: "停止播放音频",
-					description: "Stop currently playing music or audio playback on the Live2D companion.",
-					promptSnippet: "stop pet audio playback",
-					promptGuidelines: ["Call when user asks to stop playing music or voice on the companion."],
-					parameters: {
-						type: "object",
-						properties: {},
-					},
-					async execute() {
-						host.broadcast({
-							type: "live2d:action",
-							action: "stop_audio",
-						});
-						return "Live2D pet audio playback stopped.";
-					},
-				}),
-			);
-
-			// 10) live2d_trigger_blink
-			untools.push(
-				host.registerAgentTool({
-					name: "live2d_trigger_blink",
-					label: "看板娘眨眼动作",
-					description: "Trigger a cute blinking or winking eye animation on the Live2D companion.",
-					promptSnippet: "blink or wink companion eyes",
-					promptGuidelines: ["type can be 'both', 'wink_left', or 'wink_right'."],
-					parameters: {
-						type: "object",
-						properties: {
 							type: {
 								type: "string",
 								enum: ["both", "wink_left", "wink_right"],
-								description: "Blink type: 'both' for natural double blink, or 'wink_left'/'wink_right' for winking.",
+								description: "Blink animation type for trigger_blink: 'both', 'wink_left', or 'wink_right'.",
 							},
 						},
 					},
 					async execute(_id, params) {
-						const blinkType = params?.type || "both";
-						host.broadcast({
-							type: "live2d:action",
-							action: "blink",
-							blinkType,
-						});
-						return `Live2D pet triggered ${blinkType} eye animation.`;
+						const action = params?.action;
+						switch (action) {
+							case "list_models": {
+								const models = await getAllModels();
+								return JSON.stringify({
+									current: currentState.currentModel,
+									mode: currentState.mode,
+									models: models.map((m) => ({ key: m.key, name: m.name, expressions: m.expressions })),
+								});
+							}
+							case "get_current_model": {
+								const models = await getAllModels();
+								const entry = models.find((m) => m.key === currentState.currentModel) || models[0];
+								return JSON.stringify({
+									current: currentState.currentModel,
+									mode: currentState.mode,
+									modelName: entry.name,
+									expressions: entry.expressions || [],
+								});
+							}
+							case "list_expressions": {
+								const targetKey = params?.model || currentState.currentModel;
+								const models = await getAllModels();
+								const entry = models.find((m) => m.key === targetKey) || models[0];
+								return JSON.stringify({
+									model: entry.key,
+									expressions: entry.expressions || ["happy", "sad", "angry", "surprised"],
+								});
+							}
+							case "play_expression": {
+								const name = params?.name || "happy";
+								const duration = params?.duration || 4000;
+								host.broadcast({
+									type: "live2d:action",
+									action: "expression",
+									name,
+									duration,
+								});
+								return `Live2D pet played expression: ${name}`;
+							}
+							case "show_bubble": {
+								const text = params?.text || "";
+								const expression = params?.expression;
+								const duration = params?.duration || 4500;
+								host.broadcast({
+									type: "live2d:action",
+									action: "bubble",
+									text,
+									expression,
+									duration,
+								});
+								return `Live2D pet says: ${text}`;
+							}
+							case "switch_mode": {
+								const mode = params?.mode;
+								if (mode !== "mouse" && mode !== "idle") {
+									return `Invalid mode: ${mode}. Must be 'mouse' or 'idle'.`;
+								}
+								currentState.mode = mode;
+								void saveState();
+								host.broadcast({
+									type: "live2d:action",
+									action: "mode",
+									mode,
+								});
+								return `Live2D pet mode switched to: ${mode}`;
+							}
+							case "switch_model": {
+								let model = params?.model;
+								if (model === "koharu") model = "haru";
+								const models = await getAllModels();
+								const found = models.find((m) => m.key === model);
+								if (!found) {
+									return `Model '${model}' not found. Available models: ${models.map((m) => m.key).join(", ")}`;
+								}
+								currentState.currentModel = model;
+								void saveState();
+								host.broadcast({
+									type: "live2d:action",
+									action: "model_switch",
+									model,
+								});
+								return `Live2D model switched to: ${found.name}`;
+							}
+							case "play_audio": {
+								const url = params?.url;
+								if (!url) return "Error: 'url' parameter is required for action 'play_audio'.";
+								const name = params?.name || "";
+								const volume = typeof params?.volume === "number" ? params.volume : 0.85;
+								host.broadcast({
+									type: "live2d:action",
+									action: "play_audio",
+									url,
+									name,
+									volume,
+								});
+								return `Playing audio on Live2D pet with lip sync: ${name || url}`;
+							}
+							case "stop_audio": {
+								host.broadcast({
+									type: "live2d:action",
+									action: "stop_audio",
+								});
+								return "Live2D pet audio playback stopped.";
+							}
+							case "trigger_blink": {
+								const blinkType = params?.type || "both";
+								host.broadcast({
+									type: "live2d:action",
+									action: "blink",
+									blinkType,
+								});
+								return `Live2D pet triggered ${blinkType} eye animation.`;
+							}
+							default:
+								return `Unknown action: '${action}'. Supported actions: list_models, get_current_model, list_expressions, play_expression, show_bubble, switch_mode, switch_model, play_audio, stop_audio, trigger_blink.`;
+						}
 					},
 				}),
 			);

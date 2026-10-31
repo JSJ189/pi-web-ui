@@ -341,6 +341,61 @@ describe("standalone device Hub", () => {
 		expect(f.document.getElementById("room-title")!.textContent).toBe("Room two");
 		expect(renderDeviceHubPage()).toContain("setTimeout(refresh,3000)");
 	});
+	it.each([
+		{ position: 1600, expected: 2800 },
+		{ position: 1570, expected: 2800 },
+		{ position: 700, expected: 700 },
+	])("preserves the chat viewport through polling at $position", async ({ position, expected }) => {
+		const f = fixture();
+		await flush();
+		const messages = f.document.getElementById("messages")!;
+		const tasks = f.document.getElementById("tasks")!;
+		const scroller = messages.parentElement!;
+		let top = 0;
+		Object.defineProperties(scroller, {
+			clientHeight: { get: () => 400 },
+			scrollHeight: { get: () => messages.childElementCount * 800 + tasks.childElementCount * 1200 },
+			scrollTop: {
+				get: () => top,
+				set: (value: number) => {
+					top = Math.max(0, Math.min(value, scroller.scrollHeight - 400));
+				},
+			},
+		});
+		// Model the browser clamping the viewport when polling clears its content.
+		const content = Object.getOwnPropertyDescriptor(f.dom.window.Node.prototype, "textContent")!;
+		for (const list of [messages, tasks]) {
+			Object.defineProperty(list, "textContent", {
+				get() {
+					return content.get!.call(this);
+				},
+				set(value) {
+					content.set!.call(this, value);
+					scroller.scrollTop = top;
+				},
+			});
+		}
+		const timer = vi.spyOn(f.dom.window, "setTimeout");
+		f.click("#room-list button");
+		await flush();
+		expect(scroller.scrollTop).toBe(1600);
+		scroller.scrollTop = position;
+		const original = f.fetch.getMockImplementation()!;
+		f.fetch.mockImplementation(async (path, options) => {
+			const response = await original(path, options);
+			if (path !== "/api/rooms/one") return response;
+			const data = await response.json();
+			return {
+				...response,
+				json: async () => ({ ...data, tasks: [...data.tasks, { ...data.tasks[0], id: "task-two" }] }),
+			};
+		});
+		const poll = timer.mock.calls.find((call: any[]) => call[1] === 3000)!;
+		await (poll[0] as unknown as () => Promise<void>)();
+		await flush();
+		expect(tasks.childElementCount).toBe(2);
+		expect(scroller.scrollTop).toBe(expected);
+	});
 	it("keeps unsaved aliases, focus and management expansion through polling and language changes", async () => {
 		const f = fixture();
 		await flush();

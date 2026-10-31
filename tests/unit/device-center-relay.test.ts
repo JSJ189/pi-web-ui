@@ -501,7 +501,12 @@ describe("device reverse relay", () => {
 		])
 			expect(safePath(path), path).toBe(false);
 		expect(safePath("/api/health?q=yes")).toBe(true);
-		for (const path of ["/api/device-center/devices", "/api/device-center/rooms", "/api/device-center/rooms/team"])
+		for (const path of [
+			"/api/device-center/chat-status",
+			"/api/device-center/devices",
+			"/api/device-center/rooms",
+			"/api/device-center/rooms/team",
+		])
 			expect(safePath(path, "GET"), path).toBe(true);
 		for (const path of [
 			"/api/device-center/rooms",
@@ -533,7 +538,10 @@ describe("device reverse relay", () => {
 				"/api/device-center/workspaces?roomId=member",
 			])
 				expect(safePath(path, method), `${method} ${path}`).toBe(false);
-			if (method !== "GET") expect(safePath("/api/device-center/bots", method), method).toBe(false);
+			if (method !== "GET") {
+				expect(safePath("/api/device-center/bots", method), method).toBe(false);
+				expect(safePath("/api/device-center/chat-status", method), method).toBe(false);
+			}
 		}
 		expect(safePath("/api/device-center/rooms", "WS")).toBe(false);
 		expect(safePath("/api/device-center/rooms/team/messages", "GET")).toBe(false);

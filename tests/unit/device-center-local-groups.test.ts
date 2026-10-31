@@ -447,6 +447,7 @@ describe("device user group authority", () => {
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
 			});
 		}
+		expect(await (await request("chat-status")).json()).toEqual({ hubUrl, deviceId: "one" });
 		expect((await request("rooms")).status).toBe(200);
 		expect((await request("rooms", { name: "team", botIds: [] })).status).toBe(201);
 		expect(calls[0]).toEqual({ path: "/api/device-user/rooms", auth: "Bearer ui-secret" });
@@ -462,6 +463,7 @@ describe("device user group authority", () => {
 		const stale = request("rooms/waiting");
 		await waiting;
 		expect((await request("disconnect", {})).status).toBe(200);
+		expect(await (await request("chat-status")).json()).toMatchObject({ local: true, deviceId: "local-device" });
 		const staleResponse = await stale;
 		expect(staleResponse.status).toBe(409);
 		expect((await staleResponse.json()).code).toBe("DEVICE_CHANGED");

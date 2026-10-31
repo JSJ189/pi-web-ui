@@ -106,7 +106,7 @@ export function safePath(path: unknown, method = "GET"): path is string {
 		if (normalized === "/api/device-center" || normalized.startsWith("/api/device-center/")) {
 			// Only account-scoped chat routes may cross a device portal.
 			if (method === "GET") {
-				return /^\/api\/device-center\/(devices|bots|rooms(?:\/[^/]+)?)$/.test(normalized);
+				return /^\/api\/device-center\/(chat-status|devices|bots|rooms(?:\/[^/]+)?)$/.test(normalized);
 			}
 			if (method === "POST")
 				return /^\/api\/device-center\/rooms(?:\/[^/]+\/(messages|rename|members|delete))?$/.test(normalized);
@@ -448,6 +448,23 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			messages: ReturnType<typeof createWsMessageChannel>;
 		}
 	>();
+	// Slow browser responses apply transport backpressure instead of losing resource bodies.
+	const stalledResponses = new WeakMap<WebSocket, Set<ServerResponse>>();
+	function pauseForResponse(ws: WebSocket, res: ServerResponse) {
+		let stalled = stalledResponses.get(ws);
+		if (!stalled) stalledResponses.set(ws, (stalled = new Set()));
+		if (stalled.has(res)) return;
+		stalled.add(res);
+		ws.pause();
+		const resume = () => {
+			res.off("drain", resume);
+			res.off("close", resume);
+			stalled.delete(res);
+			if (!stalled.size && ws.readyState === WebSocket.OPEN) ws.resume();
+		};
+		res.once("drain", resume);
+		res.once("close", resume);
+	}
 	const tickets = new Map<string, { deviceId: string; accountId: string; generation: number; expiresAt: number }>();
 	const sessions = new Map<string, { deviceId: string; expiresAt: number }>();
 	const capabilities = new Map<string, { deviceId: string; accountId: string; expiresAt: number }>();
@@ -461,7 +478,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			session.deviceId === id &&
 			session.expiresAt > Date.now() &&
 			path?.path &&
-			safePath(path.path, websocket ? "WS" : req.method) &&
+			(!websocket || safePath(path.path, "WS")) &&
 			(!req.headers.origin || req.headers.origin === "null") &&
 			(!websocket || req.headers.origin === "null")
 		);
@@ -694,27 +711,40 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			res.writeHead(204, portalHeaders(hub, capabilityBase(id, path.token!))).end();
 			return true;
 		}
+		// Only authenticated capability requests receive opaque-origin response headers.
+		if (path) {
+			for (const [key, value] of Object.entries(portalHeaders(hub, capabilityBase(id, path.token!))))
+				res.setHeader(key, value);
+		}
+		const forwardPath = path ? path.path! : req.url;
+		// Serve account binding at the Hub, including compatibility for older device UIs.
+		// Never forward the local management status endpoint or expose its settings.
+		if (
+			path &&
+			req.method === "GET" &&
+			["/api/device-center/chat-status", "/api/device-center/status"].includes(forwardPath?.split("?")[0] ?? "")
+		) {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(JSON.stringify({ hubUrl: hub.origin, deviceId: id }));
+			return true;
+		}
 		const entry = devices.get(id);
 		if (!entry || entry.streams.size >= RELAY_LIMITS.streams) {
 			res.writeHead(503).end();
 			return true;
 		}
-		const forwardPath = path ? path.path! : req.url;
 		if (!safePath(forwardPath, req.method)) {
 			res.writeHead(400).end();
 			return true;
 		}
+		// Only entry documents are rewritten; preserve negotiated compression for assets.
+		const rewriteHtml = !!path && ["/", "/desktop"].includes(path.path!.split("?")[0]);
 		const streamId = randomBytes(12).toString("hex");
 		addStream(entry, streamId, {
 			res,
 			...(path
 				? {
-						portal: createPortalResponse(
-							res,
-							hub,
-							capabilityBase(id, path.token!),
-							["/", "/desktop"].includes(path.path!.split("?")[0]),
-						),
+						portal: createPortalResponse(res, hub, capabilityBase(id, path.token!), rewriteHtml),
 					}
 				: {}),
 		});
@@ -724,7 +754,7 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 			id: streamId,
 			method: req.method,
 			path: forwardPath,
-			headers: { ...cleanHeaders(req.headers), ...(path ? { "accept-encoding": "identity" } : {}) },
+			headers: { ...cleanHeaders(req.headers), ...(rewriteHtml ? { "accept-encoding": "identity" } : {}) },
 		});
 		req.on("data", (chunk: Buffer) => {
 			bytes += chunk.length;
@@ -880,13 +910,11 @@ export function createDeviceRelay(options: DeviceRelayOptions) {
 								if (item.portal) item.portal.write(data);
 								else if (item.res?.headersSent) item.res.write(data);
 							}
-							if (
-								item.bytes > RELAY_LIMITS.body ||
-								(!item.portal && !item.res?.headersSent) ||
-								item.res.writableLength > RELAY_LIMITS.queue
-							) {
+							if (item.bytes > RELAY_LIMITS.body || (!item.portal && !item.res?.headersSent)) {
 								item.res?.destroy();
 								sendFrame(ws, { type: "cancel", id: frame.id });
+							} else if (item.res && item.res.writableLength > RELAY_LIMITS.queue / 2) {
+								pauseForResponse(ws, item.res);
 							}
 						} else if (frame.type === "response_end" || frame.type === "error") {
 							if (frame.type === "error") item.res?.destroy();

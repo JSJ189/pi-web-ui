@@ -51,7 +51,11 @@ import { QuiesceRejectedError } from "../agent-service.js";
 
 import { NATIVE_COMMANDS, parseSlash } from "../slash-commands.js";
 import { discoverDiskSkills, readSkillInstruction } from "../skill-discovery.js";
-import { scanAtMentions, formatPromptWithSkills } from "../universal/universal-attachments.js";
+import {
+	scanAtMentions,
+	formatPromptWithSkills,
+	formatUnavailableCanvasReference,
+} from "../universal/universal-attachments.js";
 import type { ProjectRunnerInfo, SessionOwnerInfo } from "../agent-service.js";
 import { bilingual, pick, resolveServerLang, type ServerLang } from "../i18n.js";
 import { ModelAdminService } from "../model-admin.js";
@@ -2457,6 +2461,10 @@ export class DshClientSession {
 						text: "引用内容无效，请重新选择文字",
 						textEn: "Select the text again to add a quote.",
 					});
+				continue;
+			}
+			if (a.mode === "canvas") {
+				blocks.push({ type: "text", text: formatUnavailableCanvasReference(a) });
 				continue;
 			}
 			const resolved = a.path ? workspacePath(this.cwd, a.path) : null;

@@ -9,6 +9,18 @@
  * 表的口径与 `web/src/components/Markdown.tsx` 的 `MdLink` 一致：`http(s):` +
  * 它已当外链处理的 `mailto:` / `tel:`。`ftp:` 等不在表里 —— 有需要再加。
  */
+/** Only plain HTTP(S) origins are accepted as Hub browser destinations. */
+export function hubBrowserOrigin(raw: unknown): string | null {
+	if (typeof raw !== "string" || raw.length > 2048 || /[\u0000-\u0020\u007f]/.test(raw)) return null;
+	try {
+		const url = new URL(raw);
+		if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null;
+		return url.origin;
+	} catch {
+		return null;
+	}
+}
+
 export const ALLOWED_EXTERNAL_SCHEMES: ReadonlySet<string> = new Set(["http:", "https:", "mailto:", "tel:"]);
 
 /** 待打开的 URL 是否在 allowlist 里。解析失败一律 false（安全 deny）。 */

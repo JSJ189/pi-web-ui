@@ -12,13 +12,22 @@ export interface EngineMeta {
 	id: string;
 	/** 显示名称多语言键 */
 	titleKey:
-		"settingsEnginePiTitle" | "settingsEngineDshTitle" | "settingsEngineClaudeTitle" | "settingsEngineDurableTitle";
+		| "settingsEnginePiTitle"
+		| "settingsEngineDshTitle"
+		| "settingsEngineClaudeTitle"
+		| "settingsEngineCodexTitle"
+		| "settingsEngineDurableTitle";
 	/** 简短徽标标签 */
 	badge: string;
 	/** 特色定位标签（如「完整生态」「极速补丁」「通用驱动」「持久自愈」） */
 	tagKey: "engineTagFull" | "engineTagFast" | "engineTagUniversal" | "engineTagDurable";
 	/** 描述说明翻译键 */
-	descKey: "settingsEnginePiDesc" | "settingsEngineDshDesc" | "settingsEngineClaudeDesc" | "settingsEngineDurableDesc";
+	descKey:
+		| "settingsEnginePiDesc"
+		| "settingsEngineDshDesc"
+		| "settingsEngineClaudeDesc"
+		| "settingsEngineCodexDesc"
+		| "settingsEngineDurableDesc";
 	/** 样式色彩类 */
 	colorClass: string;
 	/** 对应的全局 npm 包名（如 "@deepseek-ai/dsh"） */
@@ -61,6 +70,16 @@ export const SUPPORTED_ENGINES: EngineMeta[] = [
 		colorClass: "engine-claude",
 		packageName: "@anthropic-ai/claude-code",
 		installCommand: "npm i -g @anthropic-ai/claude-code",
+	},
+	{
+		id: "codex",
+		titleKey: "settingsEngineCodexTitle",
+		badge: "CODEX",
+		tagKey: "engineTagUniversal",
+		descKey: "settingsEngineCodexDesc",
+		colorClass: "engine-codex",
+		packageName: "@openai/codex",
+		installCommand: "npm i -g @openai/codex",
 	},
 	{
 		id: "durable",

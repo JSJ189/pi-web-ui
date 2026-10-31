@@ -31,7 +31,7 @@ pi-web-ui server status|restart|stop|uninstall
 
 > uninstall 会自动移除桌面图标；未装服务时桌面快捷方式启动的实例在 status/stop 中单独报告（PS1 前台+记录 PID）。
 
-## 引擎选择（pi / DeepSeek Harness）
+## 引擎选择
 
 默认使用 pi 引擎（`@earendil-works/pi-coding-agent` SDK，进程内）。用 `--engine dsh`
 （或设 `PI_WEB_ENGINE=dsh`）切换为 DeepSeek Harness（DSH）子进程引擎：
@@ -41,11 +41,10 @@ pi-web-ui --engine dsh --port 9000 --cwd /path        # flag 优先
 PI_WEB_ENGINE=dsh pi-web-ui --port 9000 --cwd /path   # 环境变量后备
 ```
 
-- **重启生效**：引擎在启动时选定，运行中不可切换；前端右下角会显示 DSH 徽标，
-  `/api/health` 返回 `engine` 字段。
-- **界面/协议完全一致**：两引擎共用同一套 wire 协议（`server/protocol.ts`），
-  目标/审查、SCM、后台任务、设置面板、终端、消息增量等前端功能全部可用。
-- 引擎差异、架构与已知取舍见 `docs/dsh-engine.md`。
+- **运行中可切换**：界面中的引擎选择器可在 pi、DSH、Claude Code、Codex 与 Durable 间切换；启动参数设置默认引擎。
+- **共用界面协议**：各引擎共用 `server/protocol.ts`，支持的目标、审查、工具及会话操作由能力声明控制。
+- DSH 架构与差异见 `docs/dsh-engine.md`。
+- **Codex**：先运行 `npm i -g @openai/codex` 和 `codex login`，然后在选择器中切换，或使用 `pi-web-ui --engine codex --cwd /path` 启动。沿用本机 Codex 配置与认证；详情见 `docs/architecture-core.md` 的 Codex CLI 引擎章节。
 
 前台启动的其它设置也都是 flag：`--port` / `--cwd` / `--data-dir` / `--host` /
 `--agent-dir`（flag 优先，环境变量后备）。
@@ -65,15 +64,15 @@ npm i -g @deepseek-ai/dsh@0.1.1-rc.2   # 全局安装（自带嵌套运行时树
 
 ### DSH 环境变量速览
 
-| 变量                                | 默认              | 作用                                                        |
-| ----------------------------------- | ----------------- | ----------------------------------------------------------- |
-| `PI_WEB_ENGINE`                     | `pi`              | 引擎：`pi` / `dsh`（重启生效）                              |
-| `PI_WEB_DSH_RUNTIME`                | 自动解析          | 运行时树根（node_modules 根，含 `@deepseek-ai/dsh-base`）   |
-| `PI_WEB_DSH_DATA_DIR`               | `PI_WEB_DATA_DIR` | DSH 专用数据目录（用户 patch 层 `<dir>/dsh-patches/*.yml`） |
-| `PI_WEB_DSH_PATCH_DIR`              | 空                | 用户 patch 目录显式覆盖（优先级高于推导）                   |
-| `PI_WEB_DSH_QUESTION_TIMEOUT_MS`    | `600000`          | 模型 ask_user_question 提问桥超时（前端倒计时）             |
-| `PI_WEB_DSH_SESSION_RETENTION_DAYS` | `90`              | 会话 JSONL 保留天数（0 = 关闭清理）                         |
-| `PI_WEB_DSH_DEBUG`                  | 空                | `1` 时输出运行时诊断到 stderr                               |
+| 变量                                | 默认              | 作用                                                                            |
+| ----------------------------------- | ----------------- | ------------------------------------------------------------------------------- |
+| `PI_WEB_ENGINE`                     | `pi`              | 引擎：`pi` / `dsh` / `claude` / `codex` / `durable`（启动默认值，界面可热切换） |
+| `PI_WEB_DSH_RUNTIME`                | 自动解析          | 运行时树根（node_modules 根，含 `@deepseek-ai/dsh-base`）                       |
+| `PI_WEB_DSH_DATA_DIR`               | `PI_WEB_DATA_DIR` | DSH 专用数据目录（用户 patch 层 `<dir>/dsh-patches/*.yml`）                     |
+| `PI_WEB_DSH_PATCH_DIR`              | 空                | 用户 patch 目录显式覆盖（优先级高于推导）                                       |
+| `PI_WEB_DSH_QUESTION_TIMEOUT_MS`    | `600000`          | 模型 ask_user_question 提问桥超时（前端倒计时）                                 |
+| `PI_WEB_DSH_SESSION_RETENTION_DAYS` | `90`              | 会话 JSONL 保留天数（0 = 关闭清理）                                             |
+| `PI_WEB_DSH_DEBUG`                  | 空                | `1` 时输出运行时诊断到 stderr                                                   |
 
 完整列表见 `docs/env-vars.md`。
 

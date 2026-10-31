@@ -24,6 +24,36 @@ const BASE = {
 };
 
 describe("normalizeSchedulerInput", () => {
+	it("旧任务默认对话，画布允许空输入并剥离会话和模型覆盖", () => {
+		expect(normalizeSchedulerInput(BASE).target).toBe("conversation");
+		expect(() => normalizeSchedulerInput({ ...BASE, prompt: "" })).toThrow();
+		const task = normalizeSchedulerInput({
+			...BASE,
+			graphId: "graph-1",
+			prompt: "",
+			conversationId: "c1",
+			sessionFile: "/old",
+			model: "invalid",
+			thinkingLevel: "high",
+		});
+		expect(task).toMatchObject({
+			target: "canvas",
+			graphId: "graph-1",
+			prompt: "",
+			conversationId: "",
+			sessionFile: "",
+			model: "",
+			thinkingLevel: "",
+		});
+		expect(normalizeSchedulerInput({ ...BASE, target: "conversation", graphId: "graph-1" }).graphId).toBeUndefined();
+	});
+
+	it("画布 graphId 必填并拒绝路径及非法目标", () => {
+		for (const graphId of ["", "..", ".", "../escape", "a/b", "a\\b", "a".repeat(65)]) {
+			expect(() => normalizeSchedulerInput({ ...BASE, target: "canvas", graphId })).toThrow();
+		}
+		expect(() => normalizeSchedulerInput({ ...BASE, target: "invalid" as any })).toThrow();
+	});
 	it("cron 归一化（多余空白压缩）", () => {
 		const t = normalizeSchedulerInput({ ...BASE, spec: "  0  9  *  *  * " });
 		expect(t.spec).toBe("0 9 * * *");
@@ -232,6 +262,68 @@ describe("SchedulerStore", () => {
 		expect(v.lastRun!.ok).toBe(true);
 		expect(v.lastRun!.conversationId).toBe("conv-1");
 		expect(v.lastRun!.manual).toBe(true);
+	});
+
+	it("画布持久化、编辑保留目标、拒绝会话重绑定并保留运行历史", async () => {
+		const s = new SchedulerStore(dir, {
+			executor: async () => ({ ok: false, runId: "run-1", graphId: "graph-1", error: "paused" }),
+		});
+		s.upsert({ ...BASE, id: "canvas", graphId: "graph-1", prompt: "" });
+		await s.runNow("canvas");
+		const restored = new SchedulerStore(dir);
+		restored.load();
+		expect(restored.list()[0]).toMatchObject({
+			target: "canvas",
+			graphId: "graph-1",
+			lastRun: { target: "canvas", graphId: "graph-1", runId: "run-1", ok: false, error: "paused" },
+		});
+		expect(restored.upsert({ ...BASE, id: "canvas", prompt: "" })).toMatchObject({
+			target: "canvas",
+			graphId: "graph-1",
+		});
+		expect(restored.rebind("canvas", { conversationId: "c2", sessionFile: "/old" })).toBe(false);
+		expect(restored.upsert({ ...BASE, id: "canvas", target: "conversation" })).toMatchObject({
+			target: "conversation",
+			conversationId: "",
+			sessionFile: "",
+		});
+		expect(restored.list()[0].graphId).toBeUndefined();
+	});
+
+	it("upsert 引用验证失败不保存或发布，load 不依赖工程可用性", () => {
+		const s = new SchedulerStore(dir, {
+			validateTask: (task) => {
+				if (task.graphId !== "exists") throw new Error("missing graph");
+			},
+		});
+		s.upsert({ ...BASE, id: "a", graphId: "exists" });
+		const before = readFileSync(join(dir, "scheduler-tasks.json"), "utf8");
+		expect(() => s.upsert({ ...BASE, id: "a", graphId: "missing" })).toThrow("missing graph");
+		expect(s.list()[0].graphId).toBe("exists");
+		expect(readFileSync(join(dir, "scheduler-tasks.json"), "utf8")).toBe(before);
+		const restored = new SchedulerStore(dir, {
+			validateTask: () => {
+				throw new Error("offline");
+			},
+		});
+		restored.load();
+		expect(restored.list()[0].graphId).toBe("exists");
+	});
+
+	it.each([true, false])("单次画布执行完成后删除（ok=%s），周期任务保留", async (ok) => {
+		const removed: string[] = [];
+		const s = new SchedulerStore(dir, {
+			executor: async () => ({ ok }),
+			onTaskRemoved: (id) => {
+				removed.push(id);
+			},
+		});
+		s.upsert({ ...BASE, id: "once", graphId: "graph-1", oneShot: true });
+		s.upsert({ ...BASE, id: "repeat", graphId: "graph-1" });
+		await s.runNow("once");
+		await s.runNow("repeat");
+		expect(s.list().map((t) => t.id)).toEqual(["repeat"]);
+		expect(removed).toEqual(["once"]);
 	});
 
 	it("执行中 runNow 拒绝重入", async () => {

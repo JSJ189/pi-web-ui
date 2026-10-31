@@ -50,7 +50,7 @@ export function transformPortalHtml(html: string, base: string) {
 			/\b(src|href|action|poster)\s*=\s*(["'])\/(?!\/)([^"']*)\2/gi,
 			(_all, name, quote, path) => `${name}=${quote}${base}${path}${quote}`,
 		);
-	const ready = `<script>const portalReadyTimer=setInterval(()=>{if(document.querySelector('.status-conn.ok')||(!document.getElementById('root')&&document.readyState==='complete')){clearInterval(portalReadyTimer);parent.postMessage({type:'device-portal-ready'},'*')}},200);setTimeout(()=>clearInterval(portalReadyTimer),60000);</script>`;
+	const ready = `<script>(()=>{let ready=false,banner;const update=()=>{const root=document.getElementById('root'),status=document.querySelector('.status-conn');if(!ready&&((root&&root.childElementCount)||(!root&&document.readyState==='complete'))){ready=true;parent.postMessage({type:'device-portal-ready'},'*')}if(!ready||!status)return;if(!banner){banner=document.createElement('div');banner.setAttribute('role','status');banner.style.cssText='position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:2147483647;max-width:90vw;padding:8px 12px;border-radius:8px;background:#303137;color:#eee;font:13px system-ui;box-shadow:0 2px 12px #0006';banner.textContent='连接已断开，正在自动重试，请稍候… / Disconnected. Retrying automatically, please wait…';document.body.append(banner)}banner.hidden=status.classList.contains('ok')};setInterval(update,200);update()})();</script>`;
 	return `<!doctype html><base href="${base}">` + content.replace(/<!doctype[^>]*>/i, "") + ready;
 }
 /** Only the entry HTML is collected; every other body retains relay streaming. */

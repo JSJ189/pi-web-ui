@@ -1,5 +1,14 @@
 [
 	{
+		"id": "lx-music",
+		"name": "lx-music",
+		"icon": "🎵",
+		"description": "洛雪音乐播放器：多源搜索、流式播放、同步歌词、歌单与自定义音源，支持 AI 点歌。",
+		"descriptionEn": "LX Music player with multi-source search, streaming, synchronized lyrics, playlists, custom sources, and AI playback tools.",
+		"source": "xing-shuyin/pi-web-ui/plugins/lx-music",
+		"homepage": "https://github.com/xing-shuyin/pi-web-ui/tree/main/plugins/lx-music"
+	},
+	{
 		"id": "webmail",
 		"name": "webmail",
 		"icon": "📬",

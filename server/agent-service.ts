@@ -257,6 +257,7 @@ import {
 	LAZY_CORE_TOOL_NAMES,
 	lazyLoadingDisabledTools,
 	LOAD_TOOLS_TOOL_NAME,
+	CANVAS_TOOL_NAME,
 	localizedName,
 	PI_AGENT_PRESETS,
 	PI_PERMISSION_OPTIONS,
@@ -2676,6 +2677,19 @@ export class ClientSession {
 			this.flushSnapshot();
 		}
 		return { loaded, rejected };
+	}
+
+	/** A canvas reference loads the existing tool only within this session's permissions. */
+	private prepareCanvasReference(session: AgentSession, conv: Conversation): void {
+		if (this.lazyLoadingOn()) this.loadLazyTools(session, conv, [CANVAS_TOOL_NAME]);
+		if (!session.getActiveToolNames().includes(CANVAS_TOOL_NAME)) {
+			this.emit({
+				type: "notice",
+				level: "warning",
+				text: "当前会话无法调用画布工具，请检查工具开关、预设与执行权限。",
+				textEn: "Canvas is unavailable in this conversation. Check tool settings, preset, and execution permissions.",
+			});
+		}
 	}
 
 	/**
@@ -6372,6 +6386,7 @@ export class ClientSession {
 			pendingQuestion: this.pendingQuestionForSnapshot(),
 			actionSuggestions: this.markerSvc.getActionSuggestions(this.activeId) ?? null,
 			pendingApproval: this.pendingApprovalForSnapshot(),
+			pendingApprovals: this.pendingApprovalsForSnapshot(),
 			// 任务计划看板状态同样是会话级：快照恒给 PlanState 或 null（不用 undefined），
 			// 否则 snapshot_delta 里 key 缺席 → 前端 spread 浅合并会残留上一对话的 plan。
 			plan: this.planManager.getPlan(this.activeId) ?? null,
@@ -7430,6 +7445,27 @@ export class ClientSession {
 		conv.approvalPolicy = isApprovalPolicyEmpty(next) ? undefined : next;
 		this.settingsSvc.push();
 		this.flushSnapshot();
+	}
+
+	private pendingApprovalsForSnapshot(): NonNullable<UiState["pendingApprovals"]> {
+		return [...this.convs.values()]
+			.flatMap((conv) =>
+				[...(conv.pendingApprovals?.values() ?? [])].map((entry) => ({
+					id: entry.id,
+					toolCallId: entry.toolCallId,
+					toolName: entry.toolName,
+					params: entry.params,
+					reason: entry.reason,
+					reasonEn: entry.reasonEn,
+					category: entry.category,
+					hits: entry.hits,
+					parentTool: entry.parentTool,
+					conversationId: entry.conversationId,
+					conversationTitle: entry.conversationTitle,
+					createdAt: entry.createdAt,
+				})),
+			)
+			.sort((a, b) => a.createdAt - b.createdAt);
 	}
 
 	private pendingApprovalForSnapshot(): UiState["pendingApproval"] {
@@ -8912,6 +8948,7 @@ export class ClientSession {
 		editSoftEnabled?: boolean;
 		questionnaireEnabled?: boolean;
 		questionPresentation?: "queue" | "all" | "manual";
+		toolApprovalPresentation?: "queue" | "all" | "manual";
 		questionTimeoutSeconds?: number;
 		parallelReminderEnabled?: boolean;
 		thinkingWrap?: boolean;
@@ -11365,6 +11402,10 @@ export class ClientSession {
 					textEn: `Message not delivered: the conversation was closed or the run was stopped`,
 				});
 				return;
+			}
+
+			if (asides.some((aside) => (aside.message.details as { mode?: string } | undefined)?.mode === "canvas")) {
+				this.prepareCanvasReference(s, conv);
 			}
 
 			// 空闲前置：若当前未处于流式运行且上下文超标，提早在注入附件前执行软上限主动压缩（issue #716）。

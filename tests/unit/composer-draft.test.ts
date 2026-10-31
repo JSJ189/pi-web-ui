@@ -11,6 +11,12 @@ import {
 	type DraftAttachment,
 } from "../../web/src/composer-draft.js";
 
+it("keeps canvas references distinct from same-path files when restoring drafts", () => {
+	const canvas: DraftAttachment = { mode: "canvas", path: "graph-1", name: "Build" };
+	const file: DraftAttachment = { mode: "reference", path: "graph-1", name: "graph-1" };
+	expect(appendDraftAttachments([canvas], [canvas, file])).toEqual([canvas, file]);
+});
+
 describe("mergeRecalledDraft", () => {
 	it("输入框为空 → 直接填入", () => {
 		expect(mergeRecalledDraft("", "撤回的内容")).toBe("撤回的内容");

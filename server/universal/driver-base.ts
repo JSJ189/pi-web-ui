@@ -67,6 +67,8 @@ export interface AgentTurnMeta {
  * Driver 无需关心快照节流、WS 打包或 UI 数据结构，只需按生命周期调用对应方法。
  */
 export interface AgentEventSink {
+	/** Bind the real CLI thread as soon as it is allocated, before output or completion. */
+	onSessionStarted?(sessionId: string): void;
 	/** 发射流式增量正文 */
 	onTextDelta(delta: string): void;
 

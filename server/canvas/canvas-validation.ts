@@ -32,7 +32,7 @@ const roles = new Set([
 	"pstack",
 	"skill",
 ]);
-const engines = new Set(["pi", "dsh", "claude", "durable"]);
+const engines = new Set(["pi", "dsh", "codex", "claude", "durable"]);
 const edges = new Set([
 	"handoff",
 	"review",
